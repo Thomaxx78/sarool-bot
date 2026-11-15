@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: saroolbot
+    runtime: node
+    buildCommand: npm install && npx playwright install chromium --with-deps
+    startCommand: npm start
+    plan: free
+    envVars:
+      - key: SAROOL_EMAIL
+        sync: false
+      - key: SAROOL_PASSWORD
+        sync: false
+      - key: NTFY_TOPIC
+        sync: false
+      - key: AUTO_BOOK
+        value: "true"
+      - key: CHECK_INTERVAL_MINUTES
+        value: "5"
+      - key: NODE_ENV
+        value: production
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: /opt/render/project/.cache/playwright
