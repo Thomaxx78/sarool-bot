@@ -180,7 +180,7 @@ async function findNextWeekButton(page: Page): Promise<import('playwright').Elem
   return null;
 }
 
-export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Slot[] }> {
+export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Slot[]; debugInfo: { detectedMonday: string; ajaxDates: string[]; nextBtnFound: boolean } }> {
   const ctx = await newContext();
   const page = await ctx.newPage();
 
@@ -228,11 +228,13 @@ export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Sl
     }
 
     const allSlots: Slot[] = [];
+    let nextBtnFound = true;
 
     for (let week = 0; week < WEEKS_AHEAD; week++) {
       if (week > 0) {
         const nextBtn = await findNextWeekButton(page);
         if (!nextBtn) {
+          nextBtnFound = false;
           console.log(`[sarool] Bouton semaine suivante introuvable à la semaine ${week}, arrêt`);
           break;
         }
@@ -265,7 +267,16 @@ export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Sl
     const wanted = slots.filter(s => isWantedSlot(s.date));
     console.log(`[sarool] ${wanted.length} créneau(x) correspondant(s) aux critères (week-end / ≥18h)`);
 
-    return { slots, wanted };
+    const uniqueAjax = [...new Set(ajaxIsoDates)].slice(0, 5);
+    return {
+      slots,
+      wanted,
+      debugInfo: {
+        detectedMonday: displayedMonday.toLocaleDateString('fr-FR'),
+        ajaxDates: uniqueAjax,
+        nextBtnFound,
+      },
+    };
   } finally {
     await page.close();
     await ctx.close();

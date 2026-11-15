@@ -28,7 +28,7 @@ const notifiedSlotIds = loadSeen();
 let isRunning = false;
 let lastCheck: Date | null = null;
 let lastStatus = 'En attente du premier check...';
-let lastDebug: { totalSlots: number; wantedSlots: number; sample: string[] } = { totalSlots: 0, wantedSlots: 0, sample: [] };
+let lastDebug: { totalSlots: number; wantedSlots: number; sample: string[]; detectedMonday?: string; ajaxDates?: string[]; nextBtnFound?: boolean } = { totalSlots: 0, wantedSlots: 0, sample: [] };
 
 async function check(): Promise<void> {
   if (isRunning) return;
@@ -38,10 +38,13 @@ async function check(): Promise<void> {
     lastCheck = new Date();
     console.log(`\n[main] ⏰ ${lastCheck.toLocaleString('fr-FR')} — Vérification des créneaux...`);
 
-    const { slots, wanted } = await checkAvailableSlots();
+    const { slots, wanted, debugInfo } = await checkAvailableSlots();
     lastDebug = {
       totalSlots: slots.length,
       wantedSlots: wanted.length,
+      detectedMonday: debugInfo.detectedMonday,
+      ajaxDates: debugInfo.ajaxDates,
+      nextBtnFound: debugInfo.nextBtnFound,
       sample: slots.slice(0, 5).map(s => s.date.toLocaleString('fr-FR') + (s.duration ? ` (${s.duration})` : '')),
     };
 
