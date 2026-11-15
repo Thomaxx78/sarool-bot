@@ -118,6 +118,30 @@ function startHttpServer(): void {
 
   app.get('/health', (_req, res) => res.send('ok'));
 
+  // Test endpoint: sends a fake ntfy notification to validate the full pipeline
+  app.get('/test', async (_req, res) => {
+    try {
+      const fakeSlot = {
+        id: 'test',
+        date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // next week
+        duration: '60min',
+      };
+      await sendNotification([fakeSlot]);
+      res.json({ ok: true, message: 'Notification test envoyée — vérifie ton téléphone !' });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ ok: false, error: msg });
+    }
+  });
+
+  // Force check: clears seen slots and runs an immediate check
+  app.get('/force-check', async (_req, res) => {
+    notifiedSlotIds.clear();
+    saveSeen(notifiedSlotIds);
+    res.json({ ok: true, message: 'Seen slots effacés, check forcé dans 1 min' });
+    await check();
+  });
+
   app.listen(port, () => {
     console.log(`[http] Serveur démarré sur le port ${port}`);
   });
