@@ -256,7 +256,15 @@ async function extractSlots(page: Page): Promise<Slot[]> {
     });
   }
 
-  return slots.filter(s => !isNaN(s.date.getTime()));
+  // Deduplicate by date+time
+  const seen = new Set<string>();
+  return slots.filter(s => {
+    if (isNaN(s.date.getTime())) return false;
+    const key = s.date.toISOString();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export async function bookSlot(slot: Slot): Promise<boolean> {

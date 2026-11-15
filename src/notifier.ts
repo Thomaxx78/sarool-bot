@@ -7,17 +7,22 @@ function stripEmoji(str: string): string {
 }
 
 async function ntfyPost(title: string, message: string, priority: 'default' | 'high' | 'urgent' = 'high'): Promise<void> {
-  const response = await fetch(`https://ntfy.sh/${config.ntfy.topic}`, {
-    method: 'POST',
-    headers: {
-      'Title': stripEmoji(title),
-      'Priority': priority,
-      'Tags': 'car',
-      'Content-Type': 'text/plain; charset=utf-8',
-    },
-    body: message,
-  });
-  if (!response.ok) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const response = await fetch(`https://ntfy.sh/${config.ntfy.topic}`, {
+      method: 'POST',
+      headers: {
+        'Title': stripEmoji(title),
+        'Priority': priority,
+        'Tags': 'car',
+        'Content-Type': 'text/plain; charset=utf-8',
+      },
+      body: message,
+    });
+    if (response.ok) return;
+    if (response.status === 429 && attempt < 3) {
+      await new Promise(r => setTimeout(r, 10000 * attempt)); // wait 10s, 20s
+      continue;
+    }
     throw new Error(`ntfy error: ${response.status} ${response.statusText}`);
   }
 }

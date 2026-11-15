@@ -35,12 +35,6 @@ async function check(): Promise<void> {
 
     console.log(`[main] 🎯 ${newSlots.length} nouveau(x) créneau(x) trouvé(s) !`);
 
-    // DEBUG: skip notifications temporarily to avoid ntfy rate limit
-    console.log(`[main] DEBUG: ${newSlots.length} créneau(x) voulu(s), notification désactivée temporairement`);
-    newSlots.forEach(s => console.log(`[main]   → ${s.date.toLocaleString('fr-FR')} (${s.duration ?? '?'})`));
-    newSlots.forEach(s => notifiedSlotIds.add(s.id));
-    return;
-
     if (config.autoBook) {
       const target = newSlots[0]!;
       console.log(`[main] Tentative de réservation: ${target.date.toLocaleString('fr-FR')}`);
