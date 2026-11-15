@@ -88,14 +88,23 @@ export async function checkAvailableSlots(): Promise<Slot[]> {
     if (!loggedIn) throw new Error('Connexion Sarool échouée');
 
     console.log('[sarool] Récupération des disponibilités...');
-    await page.goto(`${BASE}/agenda/Disponibilites`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${BASE}/agenda/Disponibilites`, { waitUntil: 'networkidle' });
 
     // Fallback: try /agenda if Disponibilites doesn't work
     if (page.url().includes('connexion') || page.url() === `${BASE}/`) {
-      await page.goto(`${BASE}/agenda`, { waitUntil: 'domcontentloaded' });
+      await page.goto(`${BASE}/agenda`, { waitUntil: 'networkidle' });
     }
 
-    await page.waitForTimeout(2000);
+    // Wait for DayPilot calendar to finish rendering
+    await page.waitForFunction(() => {
+      const events = document.querySelectorAll('.F3_plncal_eventDisposE');
+      if (events.length === 0) return true; // no events = done
+      // Check that at least one event has a non-zero top position (rendered)
+      const tops = Array.from(events).map(e => parseInt((e as HTMLElement).style.top ?? '0'));
+      return tops.some(t => t > 0) || tops.every(t => t === 0);
+    }, { timeout: 10000 }).catch(() => {});
+
+    await page.waitForTimeout(1000);
 
     const slots = await extractSlots(page);
     console.log(`[sarool] ${slots.length} créneau(x) disponible(s) trouvé(s)`);
@@ -111,112 +120,187 @@ export async function checkAvailableSlots(): Promise<Slot[]> {
   }
 }
 
-async function extractSlots(page: Page): Promise<Slot[]> {
-  const slots: Slot[] = [];
+interface DayPilotEventData {
+  id: string;
+  start: string;
+  end: string;
+  text?: string;
+  resource?: string;
+}
 
-  // Log event elements HTML
-  const eventDebug = await page.evaluate((): string[] => {
-    const results: string[] = [];
-    document.querySelectorAll('.F3_plncal_event, .F3_plncal_eventDisposE').forEach((el: Element) => {
-      if (results.length < 5) results.push(el.outerHTML.substring(0, 600));
+async function extractSlots(page: Page): Promise<Slot[]> {
+  // Strategy 1: read DayPilot event data from the JavaScript object in the page
+  const dpEvents = await page.evaluate((): DayPilotEventData[] | null => {
+    // DayPilot stores events in the control's client-side object
+    // Try various access patterns used by different DayPilot versions
+    const win = window as unknown as Record<string, unknown>;
+
+    // Pattern A: global dp object
+    for (const key of Object.keys(win)) {
+      const obj = win[key] as Record<string, unknown> | null;
+      if (obj && typeof obj === 'object' && 'events' in obj) {
+        const events = (obj as Record<string, unknown>)['events'];
+        if (events && typeof events === 'object' && 'list' in (events as object)) {
+          const list = ((events as Record<string, unknown>)['list']) as unknown[];
+          if (Array.isArray(list) && list.length > 0) return list as DayPilotEventData[];
+        }
+      }
+    }
+
+    // Pattern B: DayPilot namespace
+    if ('DayPilot' in win) {
+      const dp = win['DayPilot'] as Record<string, unknown>;
+      if ('Calendar' in dp) {
+        const cal = dp['Calendar'] as Record<string, unknown>;
+        if ('instances' in cal) {
+          const instances = cal['instances'] as Record<string, unknown>;
+          for (const id of Object.keys(instances)) {
+            const inst = instances[id] as Record<string, unknown>;
+            const events = inst['events'] as Record<string, unknown> | undefined;
+            if (events && Array.isArray(events['list']) && (events['list'] as unknown[]).length > 0) {
+              return events['list'] as DayPilotEventData[];
+            }
+          }
+        }
+      }
+    }
+
+    return null;
+  });
+
+  if (dpEvents && dpEvents.length > 0) {
+    console.log(`[sarool] DayPilot events: ${dpEvents.length} trouvés`);
+    return dpEvents.map(e => ({
+      id: String(e.id),
+      date: new Date(e.start),
+      duration: computeDuration(new Date(e.start), new Date(e.end)),
+      instructor: e.text ?? e.resource,
+    })).filter(s => !isNaN(s.date.getTime()));
+  }
+
+  // Strategy 2: parse DayPilot event data from inline scripts
+  const scriptEvents = await page.evaluate((): DayPilotEventData[] => {
+    const results: DayPilotEventData[] = [];
+    document.querySelectorAll('script:not([src])').forEach((s: Element) => {
+      const text = (s as HTMLScriptElement).textContent ?? '';
+      // DayPilot initializes with: .events.list([...]) or .update({events:[...]})
+      const matches = text.matchAll(/"id"\s*:\s*"([^"]+)"[^}]*"start"\s*:\s*"([^"]+)"[^}]*"end"\s*:\s*"([^"]+)"/g);
+      for (const m of matches) {
+        results.push({ id: m[1]!, start: m[2]!, end: m[3]! });
+      }
     });
     return results;
   });
-  console.log(`[sarool] Events trouvés: ${eventDebug.length}`);
-  eventDebug.forEach((html, i) => console.log(`[sarool] Event[${i}]: ${html}`));
 
-  // Look for DayPilot data in page scripts
-  const daypilotData = await page.evaluate((): string | null => {
-    const scripts = Array.from(document.querySelectorAll('script:not([src])'));
-    for (const s of scripts) {
-      const t = (s as HTMLScriptElement).textContent ?? '';
-      if (t.includes('DayPilot') || t.includes('events') || t.includes('start')) {
-        return t.substring(0, 2000);
-      }
-    }
-    return null;
-  });
-  if (daypilotData) console.log('[sarool] DayPilot script:', daypilotData);
-
-  // Strategy 1: look for time slots as list items / cards / table rows
-  // Common patterns in French driving school apps
-  const slotSelectors = [
-    '[class*="slot"]',
-    '[class*="creneau"]',
-    '[class*="dispo"]',
-    '[class*="rdv"]',
-    '[data-date]',
-    '[data-slot]',
-    '.fc-event',      // FullCalendar events
-    '.calendar-event',
-    'li[class*="item"]',
-  ];
-
-  for (const selector of slotSelectors) {
-    const elements = await page.$$(selector);
-    if (elements.length > 0) {
-      console.log(`[sarool] Stratégie "${selector}": ${elements.length} éléments trouvés`);
-      // Log the first 3 elements for debugging
-      for (let i = 0; i < Math.min(3, elements.length); i++) {
-        const html = await elements[i]!.evaluate((el: Element) => el.outerHTML);
-        console.log(`[sarool] Element[${i}]: ${html.substring(0, 500)}`);
-      }
-      for (const el of elements) {
-        const slot = await parseSlotElement(el, selector);
-        if (slot) slots.push(slot);
-      }
-      if (slots.length > 0) return slots;
-    }
+  if (scriptEvents.length > 0) {
+    console.log(`[sarool] Script events: ${scriptEvents.length} trouvés`);
+    return scriptEvents.map(e => ({
+      id: e.id,
+      date: new Date(e.start),
+      duration: computeDuration(new Date(e.start), new Date(e.end)),
+      instructor: undefined,
+    })).filter(s => !isNaN(s.date.getTime()));
   }
 
-  // Strategy 2: look for JSON data in the page (SPA pattern)
-  const jsonSlots = await page.evaluate((): unknown[] | null => {
-    const scripts = Array.from((document as Document).querySelectorAll('script:not([src])'));
-    for (const script of scripts) {
-      const text = (script as HTMLScriptElement).textContent ?? '';
-      if (text.includes('"date"') || text.includes('"start"') || text.includes('"debut"')) {
-        try {
-          const match = text.match(/\[[\s\S]*"(?:date|start|debut)"[\s\S]*\]/);
-          if (match) return JSON.parse(match[0]) as unknown[];
-        } catch {
-          // ignore parse errors
-        }
+  // Strategy 3: derive date/time from DayPilot CSS positions
+  // Each event div has position:absolute with top=px offset from calendar start
+  // Column index = day of week, top position = time offset
+  const cssSlots = await page.evaluate((): Array<{ colIndex: number; topPx: number; heightPx: number }> => {
+    const results: Array<{ colIndex: number; topPx: number; heightPx: number }> = [];
+
+    // Find the calendar scroll container
+    const scroll = document.querySelector('.F3_plncal_scroll');
+    if (!scroll) return results;
+
+    // Find column containers (one per visible day)
+    const columns = Array.from(scroll.querySelectorAll('[style*="position: absolute"][style*="left"]'))
+      .filter(el => el.querySelector('.F3_plncal_eventDisposE'));
+
+    // Find calendar height and row headers to determine time scale
+    const rowHeaders = Array.from(document.querySelectorAll('.F3_plncal_rowheader_inner'));
+    const calendarHeight = (scroll as HTMLElement).offsetHeight;
+
+    document.querySelectorAll('.F3_plncal_eventDisposE').forEach((el: Element) => {
+      const style = (el as HTMLElement).style;
+      const top = parseInt(style.top ?? '0');
+      const height = parseInt(style.height ?? '32');
+
+      // Find which column this event is in
+      let colIndex = 0;
+      let parent: Element | null = el.parentElement;
+      while (parent && parent !== scroll) {
+        const siblings = parent.parentElement ? Array.from(parent.parentElement.children) : [];
+        const idx = siblings.indexOf(parent);
+        if (idx > 0) { colIndex = idx - 1; break; }
+        parent = parent.parentElement;
       }
-    }
-    return null;
+
+      results.push({ colIndex, topPx: top, heightPx: height });
+    });
+
+    return results;
   });
 
-  if (jsonSlots && Array.isArray(jsonSlots)) {
-    console.log(`[sarool] Stratégie JSON inline: ${jsonSlots.length} éléments`);
-    for (const raw of jsonSlots) {
-      const item = raw as Record<string, unknown>;
-      const dateStr = (item['date'] ?? item['start'] ?? item['debut'] ?? item['dateDebut']) as string | undefined;
-      if (dateStr) {
-        const date = new Date(dateStr);
-        if (!isNaN(date.getTime())) {
-          slots.push({
-            id: String(item['id'] ?? item['idSeance'] ?? date.getTime()),
-            date,
-            duration: (item['duree'] ?? item['duration']) as string | undefined,
-            instructor: (item['moniteur'] ?? item['instructor'] ?? item['enseignant']) as string | undefined,
-          });
-        }
+  if (cssSlots.length > 0) {
+    console.log(`[sarool] CSS slots: ${cssSlots.length} trouvés, calcul des dates...`);
+
+    // Get the calendar's visible week start and time scale
+    const calInfo = await page.evaluate((): { weekStart: string; hourHeight: number; startHour: number } | null => {
+      // Read week start from column headers (e.g. "LUNDI 15/11")
+      const headers = Array.from(document.querySelectorAll('.F3_plncal_colheader_base'));
+      const firstHeader = headers[0]?.textContent ?? '';
+      const dateMatch = firstHeader.match(/(\d{2})\/(\d{2})\/(\d{4})|(\d{2})\/(\d{2})/);
+
+      // Read first row header to find start hour
+      const firstRow = document.querySelector('.F3_plncal_rowheader_inner');
+      const firstHourText = firstRow?.textContent?.trim() ?? '8';
+      const startHour = parseInt(firstHourText.replace('h', '').replace(':', ''));
+
+      // Calculate pixels per hour by looking at row height
+      const rows = Array.from(document.querySelectorAll('.F3_plncal_rowheader_inner'));
+      let hourHeight = 32; // default
+      if (rows.length >= 2) {
+        const r1 = rows[0] as HTMLElement;
+        const r2 = rows[1] as HTMLElement;
+        hourHeight = r2.offsetTop - r1.offsetTop || 32;
       }
-    }
-    if (slots.length > 0) return slots;
+
+      return { weekStart: new Date().toISOString().split('T')[0]!, hourHeight, startHour };
+    });
+
+    console.log('[sarool] calInfo:', JSON.stringify(calInfo));
+
+    const today = new Date();
+    const dayOfWeek = today.getDay(); // 0=sun
+    const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    const monday = new Date(today);
+    monday.setDate(today.getDate() + mondayOffset);
+
+    const hourHeight = calInfo?.hourHeight ?? 32;
+    const startHour = calInfo?.startHour ?? 8;
+
+    return cssSlots.map((s, i) => {
+      const slotDay = new Date(monday);
+      slotDay.setDate(monday.getDate() + s.colIndex);
+      const totalMinutes = startHour * 60 + Math.round((s.topPx / hourHeight) * 60);
+      slotDay.setHours(Math.floor(totalMinutes / 60), totalMinutes % 60, 0, 0);
+      const durationMin = Math.round((s.heightPx / hourHeight) * 60);
+      return {
+        id: `css-${s.colIndex}-${s.topPx}`,
+        date: slotDay,
+        duration: `${durationMin}min`,
+        instructor: undefined,
+      };
+    }).filter(s => !isNaN(s.date.getTime()));
   }
 
-  // If nothing found, log page content for debugging
-  console.warn('[sarool] Aucun créneau trouvé avec les stratégies actuelles');
-  console.warn('[sarool] URL actuelle:', page.url());
+  console.warn('[sarool] Aucun créneau trouvé — URL:', page.url());
+  return [];
+}
 
-  // Save debug snapshot
-  const html = await page.content();
-  const fs = await import('fs/promises');
-  await fs.writeFile('/tmp/sarool_debug.html', html);
-  console.log('[sarool] HTML de debug sauvegardé dans /tmp/sarool_debug.html');
-
-  return slots;
+function computeDuration(start: Date, end: Date): string {
+  const mins = Math.round((end.getTime() - start.getTime()) / 60000);
+  return `${mins}min`;
 }
 
 async function parseSlotElement(
