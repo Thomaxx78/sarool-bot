@@ -120,7 +120,7 @@ async function extractSlots(page: Page): Promise<Slot[]> {
     eventCount: number;
     colHeaders: string[];
     rowHeaders: string[];
-    events: Array<{ top: number; height: number; left: string; colIndex: number }>;
+    events: Array<{ top: number; height: number; left: string; colIndex: number; ancestorLefts: string }>;
   } => {
     const eventEls = Array.from(document.querySelectorAll('.F3_plncal_eventDisposE'));
     const colHeaders = Array.from(document.querySelectorAll('.F3_plncal_colheader_base'))
@@ -139,28 +139,42 @@ async function extractSlots(page: Page): Promise<Slot[]> {
 
     const events = eventEls.map(el => {
       const style = (el as HTMLElement).style;
-      // Find column index: which column container is this event inside?
-      let colIndex = -1;
-      for (let i = 0; i < colContainers.length; i++) {
-        if (colContainers[i]!.contains(el)) { colIndex = i; break; }
+      // Log ancestor left values to find the column container
+      const ancestorLefts: string[] = [];
+      let a: Element | null = el.parentElement;
+      for (let depth = 0; depth < 8 && a; depth++) {
+        ancestorLefts.push(`d${depth}:${(a as HTMLElement).style.left ?? 'none'}`);
+        a = a.parentElement;
       }
-      // Fallback: use left% of nearest positioned ancestor
-      if (colIndex === -1) {
-        let ancestor: Element | null = el.parentElement;
-        while (ancestor && ancestor !== scrollContent) {
-          const left = parseFloat((ancestor as HTMLElement).style.left ?? '');
-          if (!isNaN(left) && left > 0) {
-            colIndex = Math.round(left / (100 / Math.max(colHeaders.length, 1)));
+      // Find the first ancestor with a meaningful left% (excluding 0% which is the event itself)
+      // The column container will have left = X% where X > 0 for columns 2+
+      // For column 1 (Monday), left = 0% — detect by checking if parent contains multiple events
+      let colIndex = -1;
+      let ancestor: Element | null = el.parentElement;
+      for (let depth = 0; depth < 8 && ancestor; depth++) {
+        const left = (ancestor as HTMLElement).style.left ?? '';
+        if (left.endsWith('%')) {
+          const pct = parseFloat(left);
+          if (!isNaN(pct)) {
+            // This is a column container - find its index among siblings with same structure
+            const parent = ancestor.parentElement;
+            if (parent) {
+              const siblings = Array.from(parent.children).filter(
+                c => (c as HTMLElement).style.left?.endsWith('%')
+              );
+              colIndex = siblings.indexOf(ancestor);
+            }
             break;
           }
-          ancestor = ancestor.parentElement;
         }
+        ancestor = ancestor.parentElement;
       }
       return {
         top: parseInt(style.top ?? '0'),
         height: parseInt(style.height ?? '32'),
         left: style.left ?? '0%',
         colIndex: Math.max(0, colIndex),
+        ancestorLefts: ancestorLefts.join(', '),
       };
     });
 
@@ -171,7 +185,7 @@ async function extractSlots(page: Page): Promise<Slot[]> {
   console.log(`[sarool] colHeaders: ${pageState.colHeaders.join(' | ')}`);
   console.log(`[sarool] rowHeaders (first 4): ${pageState.rowHeaders.slice(0, 4).join(' | ')}`);
   pageState.events.forEach((e, i) =>
-    console.log(`[sarool] event[${i}]: top=${e.top}px height=${e.height}px colIndex=${e.colIndex}`)
+    console.log(`[sarool] event[${i}]: top=${e.top}px height=${e.height}px colIndex=${e.colIndex} ancestors=[${e.ancestorLefts}]`)
   );
 
   if (pageState.eventCount === 0) return [];
