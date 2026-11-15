@@ -88,23 +88,16 @@ export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Sl
     if (!loggedIn) throw new Error('Connexion Sarool échouée');
 
     console.log('[sarool] Récupération des disponibilités...');
-    await page.goto(`${BASE}/agenda/Disponibilites`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/agenda/Disponibilites`, { waitUntil: 'domcontentloaded' });
 
     // Fallback: try /agenda if Disponibilites doesn't work
     if (page.url().includes('connexion') || page.url() === `${BASE}/`) {
-      await page.goto(`${BASE}/agenda`, { waitUntil: 'networkidle' });
+      await page.goto(`${BASE}/agenda`, { waitUntil: 'domcontentloaded' });
     }
 
-    // Wait for DayPilot calendar to finish rendering
-    await page.waitForFunction(() => {
-      const events = document.querySelectorAll('.F3_plncal_eventDisposE');
-      if (events.length === 0) return true; // no events = done
-      // Check that at least one event has a non-zero top position (rendered)
-      const tops = Array.from(events).map(e => parseInt((e as HTMLElement).style.top ?? '0'));
-      return tops.some(t => t > 0) || tops.every(t => t === 0);
-    }, { timeout: 10000 }).catch(() => {});
-
-    await page.waitForTimeout(1000);
+    // Wait for DayPilot UpdatePanel to finish rendering events
+    await page.waitForSelector('.F3_plncal_eventDisposE, .F3_plncal_main', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(3000);
 
     const slots = await extractSlots(page);
     console.log(`[sarool] ${slots.length} créneau(x) total trouvé(s)`);
@@ -195,27 +188,67 @@ async function extractSlots(page: Page): Promise<Slot[]> {
   const startMinutes = rowTimes[0] ?? 480; // default 8h
   console.log(`[sarool] pxPerMinute=${pxPerMinute.toFixed(3)} startAt=${Math.floor(startMinutes/60)}h${startMinutes%60}`);
 
+  // Map French day names to Monday-based index (0=lundi, 1=mardi, ...)
+  const DAY_INDEX: Record<string, number> = {
+    'LUNDI': 0, 'LUN': 0, 'LUN.': 0,
+    'MARDI': 1, 'MAR': 1, 'MAR.': 1,
+    'MERCREDI': 2, 'MER': 2, 'MER.': 2,
+    'JEUDI': 3, 'JEU': 3, 'JEU.': 3,
+    'VENDREDI': 4, 'VEN': 4, 'VEN.': 4,
+    'SAMEDI': 5, 'SAM': 5, 'SAM.': 5,
+    'DIMANCHE': 6, 'DIM': 6, 'DIM.': 6,
+  };
+
+  // Find the Monday of the week shown in the calendar
+  const today = new Date();
+  const dow = today.getDay(); // 0=sun
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1));
+  monday.setHours(0, 0, 0, 0);
+
+  // Also try to find week start from colHeaders index (some headers may have dates)
+  // Check if any header has an explicit date (e.g. "LUNDI 16/11")
+  for (let i = 0; i < pageState.colHeaders.length; i++) {
+    const h = pageState.colHeaders[i] ?? '';
+    const dm = h.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/);
+    if (dm) {
+      // Infer Monday from this dated header
+      const dIdx = DAY_INDEX[h.split(/\s+/)[0]?.toUpperCase() ?? ''] ?? i;
+      const year = dm[3] ? parseInt(dm[3]) : today.getFullYear();
+      const slotDate = new Date(year, parseInt(dm[2]!) - 1, parseInt(dm[1]!));
+      monday.setTime(slotDate.getTime() - dIdx * 86400000);
+      monday.setHours(0, 0, 0, 0);
+      console.log(`[sarool] Semaine inférée depuis header "${h}": lundi = ${monday.toLocaleDateString('fr-FR')}`);
+      break;
+    }
+  }
+
   // Step 3: map each event to a date
   for (const ev of pageState.events) {
-    // Parse column header date: "LUNDI 16/11" or "SAM. 22/11/2026"
-    const dateMatch = ev.colHeader.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/);
-    if (!dateMatch) {
-      console.log(`[sarool] Pas de date dans le header "${ev.colHeader}", skip`);
+    // Determine column index from header text
+    const headerWord = ev.colHeader.split(/\s+/)[0]?.toUpperCase() ?? '';
+    let colIdx = DAY_INDEX[headerWord] ?? -1;
+    if (colIdx === -1) {
+      // Try position-based: find index of this header in colHeaders
+      colIdx = pageState.colHeaders.findIndex(h => h === ev.colHeader);
+    }
+    if (colIdx === -1) {
+      console.log(`[sarool] Colonne inconnue "${ev.colHeader}", skip`);
       continue;
     }
-    const year = dateMatch[3] ? parseInt(dateMatch[3]) : new Date().getFullYear();
-    const month = parseInt(dateMatch[2]!) - 1;
-    const day = parseInt(dateMatch[1]!);
 
-    const offsetMinutes = ev.top / pxPerMinute;
+    const slotDay = new Date(monday);
+    slotDay.setDate(monday.getDate() + colIdx);
+
+    const offsetMinutes = pxPerMinute > 0 ? ev.top / pxPerMinute : 0;
     const totalMinutes = startMinutes + offsetMinutes;
-    const durationMin = Math.round(ev.height / pxPerMinute);
+    const durationMin = pxPerMinute > 0 ? Math.round(ev.height / pxPerMinute) : 60;
 
-    const date = new Date(year, month, day, Math.floor(totalMinutes / 60), Math.round(totalMinutes % 60), 0, 0);
+    slotDay.setHours(Math.floor(totalMinutes / 60), Math.round(totalMinutes % 60), 0, 0);
 
     slots.push({
-      id: `${ev.colHeader}-${ev.top}`,
-      date,
+      id: `col${colIdx}-top${ev.top}`,
+      date: slotDay,
       duration: `${durationMin}min`,
       instructor: undefined,
     });
