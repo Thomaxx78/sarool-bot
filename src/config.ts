@@ -14,7 +14,11 @@ export const config = {
     baseUrl: 'https://www.sarool.fr',
   },
   ntfy: {
-    topic: required('NTFY_TOPIC'),
+    topic: process.env['NTFY_TOPIC'] ?? '',
+  },
+  telegram: {
+    botToken: process.env['TELEGRAM_BOT_TOKEN'] ?? '',
+    chatId: process.env['TELEGRAM_CHAT_ID'] ?? '',
   },
   autoBook: process.env.AUTO_BOOK === 'true',
   checkIntervalMinutes: parseInt(process.env.CHECK_INTERVAL_MINUTES ?? '5', 10),

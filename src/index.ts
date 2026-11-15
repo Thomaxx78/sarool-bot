@@ -118,7 +118,29 @@ function startHttpServer(): void {
 
   app.get('/health', (_req, res) => res.send('ok'));
 
-  // Test endpoint: sends a fake ntfy notification to validate the full pipeline
+  // Telegram setup: call this after sending /start to your bot to retrieve chat_id
+  app.get('/telegram-setup', async (_req, res) => {
+    const { botToken } = config.telegram;
+    if (!botToken) {
+      res.status(400).json({ ok: false, error: 'TELEGRAM_BOT_TOKEN non configuré' });
+      return;
+    }
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates`);
+      const data = await r.json() as { ok: boolean; result?: Array<{ message?: { chat?: { id: number; first_name?: string } } }> };
+      if (!data.ok || !data.result?.length) {
+        res.json({ ok: false, message: 'Aucun message reçu — envoie /start à ton bot Telegram d\'abord !', raw: data });
+        return;
+      }
+      const chatId = data.result[data.result.length - 1]?.message?.chat?.id;
+      const name = data.result[data.result.length - 1]?.message?.chat?.first_name ?? '';
+      res.json({ ok: true, chatId, name, message: `Ajoute TELEGRAM_CHAT_ID=${chatId} dans les variables d'env Render` });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: String(err) });
+    }
+  });
+
+  // Test endpoint: sends a fake Telegram notification to validate the full pipeline
   app.get('/test', async (_req, res) => {
     try {
       const fakeSlot = {

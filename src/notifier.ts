@@ -1,12 +1,34 @@
 import { config } from './config.js';
 import type { Slot } from './sarool.js';
 
+// ── Telegram ────────────────────────────────────────────────────────────────
+
+async function telegramSend(message: string): Promise<boolean> {
+  const { botToken, chatId } = config.telegram;
+  if (!botToken || !chatId) return false;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: 'HTML' }),
+    });
+    if (res.ok) { console.log('[notifier] Telegram envoyé'); return true; }
+    console.error(`[notifier] Telegram erreur: ${res.status}`);
+    return false;
+  } catch (err) {
+    console.error(`[notifier] Telegram fetch failed: ${err}`);
+    return false;
+  }
+}
+
+// ── ntfy (fallback) ──────────────────────────────────────────────────────────
+
 function stripEmoji(str: string): string {
-  // HTTP headers only support ASCII — remove emoji
   return str.replace(/[^\x00-\x7F]/g, '').trim();
 }
 
 async function ntfyPost(title: string, message: string, priority: 'default' | 'high' | 'urgent' = 'high'): Promise<void> {
+  if (!config.ntfy.topic) throw new Error('NTFY_TOPIC non configuré');
   for (let attempt = 1; attempt <= 3; attempt++) {
     const response = await fetch(`https://ntfy.sh/${config.ntfy.topic}`, {
       method: 'POST',
@@ -20,12 +42,14 @@ async function ntfyPost(title: string, message: string, priority: 'default' | 'h
     });
     if (response.ok) return;
     if (response.status === 429 && attempt < 3) {
-      await new Promise(r => setTimeout(r, 10000 * attempt)); // wait 10s, 20s
+      await new Promise(r => setTimeout(r, 10000 * attempt));
       continue;
     }
     throw new Error(`ntfy error: ${response.status} ${response.statusText}`);
   }
 }
+
+// ── Public API ───────────────────────────────────────────────────────────────
 
 export async function sendNotification(slots: Slot[]): Promise<void> {
   const lines = slots.map(s => {
@@ -33,21 +57,23 @@ export async function sendNotification(slots: Slot[]): Promise<void> {
       weekday: 'long', day: '2-digit', month: 'long',
       hour: '2-digit', minute: '2-digit',
     });
-    return `${dateStr}${s.duration ? ` (${s.duration})` : ''}${s.instructor ? ` — ${s.instructor}` : ''}`;
+    return `${dateStr}${s.duration ? ` (${s.duration})` : ''}`;
   });
 
-  const body = lines.join('\n') + '\n\nsarool.fr/agenda';
-  await ntfyPost(`🚗 ${slots.length} créneau(x) dispo sur Sarool !`, body, 'urgent');
-  console.log(`[notifier] Notification ntfy envoyée pour ${slots.length} créneau(x)`);
+  const tgMsg = `🚗 <b>${slots.length} créneau(x) dispo sur Sarool !</b>\n\n${lines.join('\n')}\n\nsarool.fr/agenda`;
+  const ntfyBody = lines.join('\n') + '\n\nsarool.fr/agenda';
+
+  const sent = await telegramSend(tgMsg);
+  if (!sent) await ntfyPost(`🚗 ${slots.length} créneau(x) dispo sur Sarool !`, ntfyBody, 'urgent');
 }
 
 export async function sendError(error: string): Promise<void> {
-  // Don't retry ntfy on rate limit errors — avoids cascade of 429s
   if (error.includes('429')) return;
   try {
-    await ntfyPost('⚠️ SaroolBot erreur', error, 'default');
+    const sent = await telegramSend(`⚠️ SaroolBot erreur:\n${error}`);
+    if (!sent) await ntfyPost('SaroolBot erreur', error, 'default');
   } catch {
-    // ignore notification errors
+    // ignore
   }
 }
 
@@ -56,7 +82,7 @@ export async function sendBookingConfirmation(slot: Slot): Promise<void> {
     weekday: 'long', day: '2-digit', month: 'long',
     hour: '2-digit', minute: '2-digit',
   });
-  const body = `${dateStr}${slot.instructor ? `\n${slot.instructor}` : ''}`;
-  await ntfyPost('✅ Créneau Sarool réservé !', body, 'urgent');
-  console.log(`[notifier] Confirmation de réservation ntfy envoyée`);
+  const tgMsg = `✅ <b>Créneau Sarool réservé !</b>\n${dateStr}`;
+  const sent = await telegramSend(tgMsg);
+  if (!sent) await ntfyPost('Créneau Sarool réservé !', dateStr, 'urgent');
 }
