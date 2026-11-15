@@ -35,6 +35,9 @@ async function check(): Promise<void> {
 
     console.log(`[main] 🎯 ${newSlots.length} nouveau(x) créneau(x) trouvé(s) !`);
 
+    // Mark slots as seen immediately to avoid re-notifying every 5 min
+    newSlots.forEach(s => notifiedSlotIds.add(s.id));
+
     if (config.autoBook) {
       const target = newSlots[0]!;
       console.log(`[main] Tentative de réservation: ${target.date.toLocaleString('fr-FR')}`);
@@ -42,17 +45,14 @@ async function check(): Promise<void> {
       const booked = await bookSlot(target);
       if (booked) {
         await sendBookingConfirmation(target);
-        notifiedSlotIds.add(target.id);
-        lastStatus = `✅ Réservé: ${target.date.toLocaleString('fr-FR')}`;
+        lastStatus = `Réservé: ${target.date.toLocaleString('fr-FR')}`;
       } else {
         await sendNotification(newSlots);
-        newSlots.forEach(s => notifiedSlotIds.add(s.id));
-        lastStatus = `⚠️ Résa auto échouée — alerte envoyée`;
+        lastStatus = `Résa auto échouée — alerte envoyée`;
       }
     } else {
       await sendNotification(newSlots);
-      newSlots.forEach(s => notifiedSlotIds.add(s.id));
-      lastStatus = `📬 ${newSlots.length} créneau(x) notifié(s)`;
+      lastStatus = `${newSlots.length} créneau(x) notifié(s) — ${new Date().toLocaleString('fr-FR')}`;
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
