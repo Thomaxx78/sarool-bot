@@ -184,6 +184,18 @@ export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Sl
   const ctx = await newContext();
   const page = await ctx.newPage();
 
+  // Intercept DayPilot AJAX responses to capture real event dates
+  const ajaxIsoDates: string[] = [];
+  page.on('response', async response => {
+    try {
+      const ct = response.headers()['content-type'] ?? '';
+      if (!ct.includes('json') && !ct.includes('text')) return;
+      const text = await response.text();
+      const matches = text.match(/202[5-9]-\d{2}-\d{2}T\d{2}:\d{2}/g) ?? [];
+      if (matches.length > 0) ajaxIsoDates.push(...matches);
+    } catch { /* ignore */ }
+  });
+
   try {
     const loggedIn = await login(page);
     if (!loggedIn) throw new Error('Connexion Sarool échouée');
@@ -200,8 +212,20 @@ export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Sl
     await page.waitForSelector('.F3_plncal_eventDisposE, .F3_plncal_main', { timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(3000);
 
-    // Detect what week DayPilot is currently showing
-    const displayedMonday = await detectDisplayedMonday(page);
+    console.log(`[sarool] ISO dates capturées AJAX: ${[...new Set(ajaxIsoDates)].slice(0, 10).join(' | ')}`);
+
+    // Try AJAX dates first, then fall back to DOM scanning
+    let displayedMonday: Date;
+    if (ajaxIsoDates.length > 0) {
+      const d = new Date(ajaxIsoDates[0]!);
+      const dow = d.getDay();
+      displayedMonday = new Date(d);
+      displayedMonday.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1));
+      displayedMonday.setHours(0, 0, 0, 0);
+      console.log(`[sarool] Semaine détectée depuis AJAX: lundi = ${displayedMonday.toLocaleDateString('fr-FR')}`);
+    } else {
+      displayedMonday = await detectDisplayedMonday(page);
+    }
 
     const allSlots: Slot[] = [];
 

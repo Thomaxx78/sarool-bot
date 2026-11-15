@@ -42,6 +42,8 @@ export async function sendNotification(slots: Slot[]): Promise<void> {
 }
 
 export async function sendError(error: string): Promise<void> {
+  // Don't retry ntfy on rate limit errors — avoids cascade of 429s
+  if (error.includes('429')) return;
   try {
     await ntfyPost('⚠️ SaroolBot erreur', error, 'default');
   } catch {
