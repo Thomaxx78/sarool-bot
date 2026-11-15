@@ -81,6 +81,98 @@ async function login(page: Page): Promise<boolean> {
 
 const WEEKS_AHEAD = parseInt(process.env.WEEKS_AHEAD ?? '8', 10);
 
+// Detect the Monday date of the week currently displayed in DayPilot
+async function detectDisplayedMonday(page: Page): Promise<Date> {
+  const info = await page.evaluate((): { navText: string[]; colHeaderDates: string[]; url: string } => {
+    // Try to find date info from navigation header or column headers
+    const navText = Array.from(document.querySelectorAll('[class*="nav"], [class*="corner"], [class*="header"], [class*="title"]'))
+      .map(el => el.textContent?.trim() ?? '')
+      .filter(t => t.length > 0 && /\d/.test(t))
+      .slice(0, 10);
+    const colHeaderDates = Array.from(document.querySelectorAll('.F3_plncal_colheader_base, [class*="colheader"]'))
+      .map(el => el.textContent?.trim() ?? '');
+    return { navText, colHeaderDates, url: window.location.href };
+  });
+
+  console.log(`[sarool] navText: ${info.navText.slice(0, 5).join(' | ')}`);
+  console.log(`[sarool] colHeaderDates: ${info.colHeaderDates.slice(0, 7).join(' | ')}`);
+
+  // Try to parse a date from column headers (e.g. "LUNDI 04/12" or "04/12")
+  for (const h of [...info.colHeaderDates, ...info.navText]) {
+    const dm = h.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?/);
+    if (dm) {
+      const year = dm[3] ? parseInt(dm[3]) : new Date().getFullYear();
+      const date = new Date(year, parseInt(dm[2]!) - 1, parseInt(dm[1]!));
+      if (!isNaN(date.getTime()) && date.getFullYear() >= 2026) {
+        // Determine which day of week this header represents, infer Monday
+        const DAY_IDX: Record<string, number> = {
+          'LUNDI': 0, 'LUN': 0, 'MARDI': 1, 'MAR': 1, 'MERCREDI': 2, 'MER': 2,
+          'JEUDI': 3, 'JEU': 3, 'VENDREDI': 4, 'VEN': 4, 'SAMEDI': 5, 'SAM': 5, 'DIMANCHE': 6, 'DIM': 6,
+        };
+        const dayWord = h.split(/[\s\/\-]/)[0]?.toUpperCase() ?? '';
+        const dayIdx = DAY_IDX[dayWord] ?? (info.colHeaderDates.indexOf(h));
+        const monday = new Date(date);
+        monday.setDate(date.getDate() - dayIdx);
+        monday.setHours(0, 0, 0, 0);
+        console.log(`[sarool] Semaine détectée depuis "${h}": lundi = ${monday.toLocaleDateString('fr-FR')}`);
+        return monday;
+      }
+    }
+  }
+
+  // Try URL for a date param (e.g. ?date=2026-12-04)
+  const urlDate = info.url.match(/date[=\-](\d{4}[-\/]\d{2}[-\/]\d{2})/);
+  if (urlDate) {
+    const d = new Date(urlDate[1]!);
+    if (!isNaN(d.getTime())) {
+      const dow = d.getDay();
+      d.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1));
+      d.setHours(0, 0, 0, 0);
+      console.log(`[sarool] Semaine détectée depuis URL: lundi = ${d.toLocaleDateString('fr-FR')}`);
+      return d;
+    }
+  }
+
+  // Fallback: current week's Monday
+  const today = new Date();
+  const dow = today.getDay();
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1));
+  monday.setHours(0, 0, 0, 0);
+  console.log(`[sarool] Semaine non détectée, fallback semaine courante: lundi = ${monday.toLocaleDateString('fr-FR')}`);
+  return monday;
+}
+
+// Try multiple selectors to find the DayPilot next-week navigation button
+async function findNextWeekButton(page: Page): Promise<import('playwright').ElementHandle | null> {
+  const selectors = [
+    '.F3_plncal_nav_next',
+    '[class*="nav_next"]',
+    '[class*="plncal_next"]',
+    'input[value=">"]',
+    'input[value=">>"]',
+    'input[value="→"]',
+    '[onclick*="next"]',
+    '[onclick*="Next"]',
+    'a[href*="next"]',
+  ];
+  for (const sel of selectors) {
+    const el = await page.$(sel);
+    if (el) {
+      console.log(`[sarool] Bouton suivant trouvé: "${sel}"`);
+      return el;
+    }
+  }
+  // Log what navigation elements exist for debugging
+  const navEls = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('[class*="nav"], [class*="plncal_n"]'))
+      .map(el => `${el.tagName}.${el.className.trim().replace(/\s+/g, '.')} value="${(el as HTMLInputElement).value ?? ''}"`)
+      .slice(0, 15)
+  );
+  console.log(`[sarool] Éléments nav trouvés: ${navEls.join(' | ')}`);
+  return null;
+}
+
 export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Slot[] }> {
   const ctx = await newContext();
   const page = await ctx.newPage();
@@ -101,12 +193,14 @@ export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Sl
     await page.waitForSelector('.F3_plncal_eventDisposE, .F3_plncal_main', { timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(3000);
 
+    // Detect what week DayPilot is currently showing
+    const displayedMonday = await detectDisplayedMonday(page);
+
     const allSlots: Slot[] = [];
 
     for (let week = 0; week < WEEKS_AHEAD; week++) {
       if (week > 0) {
-        // Click the "next week" button in DayPilot
-        const nextBtn = await page.$('.F3_plncal_nav_next, [class*="nav_next"], [title*="suivant"], [title*="next"], [aria-label*="suivant"], [aria-label*="next"]');
+        const nextBtn = await findNextWeekButton(page);
         if (!nextBtn) {
           console.log(`[sarool] Bouton semaine suivante introuvable à la semaine ${week}, arrêt`);
           break;
@@ -115,8 +209,12 @@ export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Sl
         await page.waitForTimeout(2500);
       }
 
-      const weekSlots = await extractSlots(page);
-      console.log(`[sarool] Semaine +${week}: ${weekSlots.length} créneau(x)`);
+      // Compute the Monday for this week relative to what DayPilot initially showed
+      const weekMonday = new Date(displayedMonday);
+      weekMonday.setDate(displayedMonday.getDate() + week * 7);
+
+      const weekSlots = await extractSlots(page, weekMonday);
+      console.log(`[sarool] Semaine +${week} (${weekMonday.toLocaleDateString('fr-FR')}): ${weekSlots.length} créneau(x)`);
       weekSlots.forEach(s => console.log(`[sarool]   → ${s.date.toLocaleString('fr-FR')} (${s.duration ?? '?'})`));
       allSlots.push(...weekSlots);
     }
@@ -144,7 +242,7 @@ export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Sl
   }
 }
 
-async function extractSlots(page: Page): Promise<Slot[]> {
+async function extractSlots(page: Page, monday: Date): Promise<Slot[]> {
   // Step 1: count F3_plncal_eventDisposE elements
   const pageState = await page.evaluate((): {
     eventCount: number;
@@ -237,42 +335,7 @@ async function extractSlots(page: Page): Promise<Slot[]> {
   const startMinutes = rowTimes[0] ?? 480; // default 8h
   console.log(`[sarool] pxPerMinute=${pxPerMinute.toFixed(3)} startAt=${Math.floor(startMinutes/60)}h${startMinutes%60}`);
 
-  // Map French day names to Monday-based index (0=lundi, 1=mardi, ...)
-  const DAY_INDEX: Record<string, number> = {
-    'LUNDI': 0, 'LUN': 0, 'LUN.': 0,
-    'MARDI': 1, 'MAR': 1, 'MAR.': 1,
-    'MERCREDI': 2, 'MER': 2, 'MER.': 2,
-    'JEUDI': 3, 'JEU': 3, 'JEU.': 3,
-    'VENDREDI': 4, 'VEN': 4, 'VEN.': 4,
-    'SAMEDI': 5, 'SAM': 5, 'SAM.': 5,
-    'DIMANCHE': 6, 'DIM': 6, 'DIM.': 6,
-  };
-
-  // Find the Monday of the week shown in the calendar
-  const today = new Date();
-  const dow = today.getDay(); // 0=sun
-  const monday = new Date(today);
-  monday.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1));
-  monday.setHours(0, 0, 0, 0);
-
-  // Also try to find week start from colHeaders index (some headers may have dates)
-  // Check if any header has an explicit date (e.g. "LUNDI 16/11")
-  for (let i = 0; i < pageState.colHeaders.length; i++) {
-    const h = pageState.colHeaders[i] ?? '';
-    const dm = h.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/);
-    if (dm) {
-      // Infer Monday from this dated header
-      const dIdx = DAY_INDEX[h.split(/\s+/)[0]?.toUpperCase() ?? ''] ?? i;
-      const year = dm[3] ? parseInt(dm[3]) : today.getFullYear();
-      const slotDate = new Date(year, parseInt(dm[2]!) - 1, parseInt(dm[1]!));
-      monday.setTime(slotDate.getTime() - dIdx * 86400000);
-      monday.setHours(0, 0, 0, 0);
-      console.log(`[sarool] Semaine inférée depuis header "${h}": lundi = ${monday.toLocaleDateString('fr-FR')}`);
-      break;
-    }
-  }
-
-  // Step 3: map each event to a date
+  // Step 3: map each event to a date using the provided monday
   for (const ev of pageState.events) {
     const colIdx = ev.colIndex;
 
