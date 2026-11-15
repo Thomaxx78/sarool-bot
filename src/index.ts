@@ -25,6 +25,8 @@ function saveSeen(set: Set<string>): void {
 }
 
 const notifiedSlotIds = loadSeen();
+const startupTime = Date.now();
+const STARTUP_COOLDOWN_MS = 5 * 60 * 1000; // 5 min — silence notifications after restart
 let isRunning = false;
 let lastCheck: Date | null = null;
 let lastStatus = 'En attente du premier check...';
@@ -53,16 +55,25 @@ async function check(): Promise<void> {
     const newSlots = wanted.filter(s => !notifiedSlotIds.has(s.id));
 
     if (newSlots.length === 0) {
-      lastStatus = `Aucun créneau voulu (${slots.length} total trouvé) — ${lastCheck.toLocaleString('fr-FR')}`;
-      console.log(`[main] Aucun créneau correspondant (${slots.length} slots trouvés au total)`);
+      lastStatus = `Aucun nouveau créneau (${wanted.length} voulu(s), ${slots.length} total) — ${lastCheck.toLocaleString('fr-FR')}`;
+      console.log(`[main] Aucun nouveau créneau (${wanted.length} voulus, ${slots.length} total)`);
+      return;
+    }
+
+    // Always mark as seen to prevent re-notify
+    newSlots.forEach(s => notifiedSlotIds.add(s.id));
+    saveSeen(notifiedSlotIds);
+
+    // Startup cooldown: silently mark slots as seen without notifying
+    // Prevents ntfy spam when /tmp is wiped on redeploy
+    const inCooldown = Date.now() - startupTime < STARTUP_COOLDOWN_MS;
+    if (inCooldown) {
+      lastStatus = `Démarrage cooldown: ${newSlots.length} créneau(x) marqué(s) vus silencieusement`;
+      console.log(`[main] Cooldown démarrage: ${newSlots.length} slots marqués vus sans notification`);
       return;
     }
 
     console.log(`[main] 🎯 ${newSlots.length} nouveau(x) créneau(x) trouvé(s) !`);
-
-    // Mark slots as seen immediately to avoid re-notifying every 5 min
-    newSlots.forEach(s => notifiedSlotIds.add(s.id));
-    saveSeen(notifiedSlotIds);
 
     if (config.autoBook) {
       const target = newSlots[0]!;
