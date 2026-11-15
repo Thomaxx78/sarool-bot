@@ -137,44 +137,29 @@ async function extractSlots(page: Page): Promise<Slot[]> {
         )
       : [];
 
+    // Use getBoundingClientRect to get real screen positions
+    const mainEl = document.querySelector('.F3_plncal_main') as HTMLElement | null;
+    const mainRect = mainEl?.getBoundingClientRect();
+    const numCols = Math.max(colHeaders.length, 1);
+
     const events = eventEls.map(el => {
       const style = (el as HTMLElement).style;
-      // Log ancestor left values to find the column container
-      const ancestorLefts: string[] = [];
-      let a: Element | null = el.parentElement;
-      for (let depth = 0; depth < 8 && a; depth++) {
-        ancestorLefts.push(`d${depth}:${(a as HTMLElement).style.left ?? 'none'}`);
-        a = a.parentElement;
-      }
-      // Find the first ancestor with a meaningful left% (excluding 0% which is the event itself)
-      // The column container will have left = X% where X > 0 for columns 2+
-      // For column 1 (Monday), left = 0% — detect by checking if parent contains multiple events
-      let colIndex = -1;
-      let ancestor: Element | null = el.parentElement;
-      for (let depth = 0; depth < 8 && ancestor; depth++) {
-        const left = (ancestor as HTMLElement).style.left ?? '';
-        if (left.endsWith('%')) {
-          const pct = parseFloat(left);
-          if (!isNaN(pct)) {
-            // This is a column container - find its index among siblings with same structure
-            const parent = ancestor.parentElement;
-            if (parent) {
-              const siblings = Array.from(parent.children).filter(
-                c => (c as HTMLElement).style.left?.endsWith('%')
-              );
-              colIndex = siblings.indexOf(ancestor);
-            }
-            break;
-          }
-        }
-        ancestor = ancestor.parentElement;
+      const rect = el.getBoundingClientRect();
+      let colIndex = 0;
+      if (mainRect && mainRect.width > 0) {
+        // Calendar starts after the row header (approx 62px from class F3_plncal_corner width)
+        const rowHeaderWidth = 62;
+        const calWidth = mainRect.width - rowHeaderWidth;
+        const colWidth = calWidth / numCols;
+        const relativeLeft = rect.left - mainRect.left - rowHeaderWidth;
+        colIndex = Math.max(0, Math.min(numCols - 1, Math.floor(relativeLeft / colWidth)));
       }
       return {
         top: parseInt(style.top ?? '0'),
         height: parseInt(style.height ?? '32'),
         left: style.left ?? '0%',
-        colIndex: Math.max(0, colIndex),
-        ancestorLefts: ancestorLefts.join(', '),
+        colIndex,
+        ancestorLefts: `rect.left=${Math.round(rect.left)},mainLeft=${Math.round(mainRect?.left ?? 0)},mainW=${Math.round(mainRect?.width ?? 0)},numCols=${numCols}`,
       };
     });
 
