@@ -112,8 +112,31 @@ export async function checkAvailableSlots(): Promise<Slot[]> {
 }
 
 async function extractSlots(page: Page): Promise<Slot[]> {
-  // Dump page HTML to understand structure on first run
   const slots: Slot[] = [];
+
+  // Log all unique F3_plncal_ classes on the page to understand the structure
+  const allClasses = await page.evaluate((): string[] => {
+    const classes = new Set<string>();
+    document.querySelectorAll('[class]').forEach((el: Element) => {
+      el.className.split(' ').forEach((c: string) => {
+        if (c.startsWith('F3_') || c.includes('slot') || c.includes('event') || c.includes('rdv') || c.includes('heure') || c.includes('cell')) {
+          classes.add(c);
+        }
+      });
+    });
+    return Array.from(classes);
+  });
+  console.log('[sarool] Classes trouvées:', allClasses.join(', '));
+
+  // Log a sample of F3_plncal elements that could be slots (not headers)
+  const sampleElements = await page.evaluate((): string[] => {
+    const results: string[] = [];
+    document.querySelectorAll('[class*="F3_plncal"]:not([class*="header"])').forEach((el: Element) => {
+      if (results.length < 5) results.push(el.outerHTML.substring(0, 300));
+    });
+    return results;
+  });
+  sampleElements.forEach((html, i) => console.log(`[sarool] F3_plncal[${i}]: ${html}`));
 
   // Strategy 1: look for time slots as list items / cards / table rows
   // Common patterns in French driving school apps
