@@ -79,7 +79,7 @@ async function login(page: Page): Promise<boolean> {
   return true;
 }
 
-export async function checkAvailableSlots(): Promise<Slot[]> {
+export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Slot[] }> {
   const ctx = await newContext();
   const page = await ctx.newPage();
 
@@ -113,7 +113,7 @@ export async function checkAvailableSlots(): Promise<Slot[]> {
     const wanted = slots.filter(s => isWantedSlot(s.date));
     console.log(`[sarool] ${wanted.length} créneau(x) correspondant(s) aux critères (week-end / ≥18h)`);
 
-    return wanted;
+    return { slots, wanted };
   } finally {
     await page.close();
     await ctx.close();

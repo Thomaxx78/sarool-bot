@@ -1,13 +1,14 @@
 import cron from 'node-cron';
 import express from 'express';
 import { config } from './config.js';
-import { checkAvailableSlots, bookSlot, closeBrowser } from './sarool.js';
+import { checkAvailableSlots, bookSlot, closeBrowser, type Slot } from './sarool.js';
 import { sendNotification, sendBookingConfirmation, sendError } from './notifier.js';
 
 const notifiedSlotIds = new Set<string>();
 let isRunning = false;
 let lastCheck: Date | null = null;
 let lastStatus = 'En attente du premier check...';
+let lastDebug: { totalSlots: number; wantedSlots: number; sample: string[] } = { totalSlots: 0, wantedSlots: 0, sample: [] };
 
 async function check(): Promise<void> {
   if (isRunning) return;
@@ -17,19 +18,25 @@ async function check(): Promise<void> {
     lastCheck = new Date();
     console.log(`\n[main] ⏰ ${lastCheck.toLocaleString('fr-FR')} — Vérification des créneaux...`);
 
-    const slots = await checkAvailableSlots();
-    const newSlots = slots.filter(s => !notifiedSlotIds.has(s.id));
+    const { slots, wanted } = await checkAvailableSlots();
+    lastDebug = {
+      totalSlots: slots.length,
+      wantedSlots: wanted.length,
+      sample: slots.slice(0, 5).map(s => s.date.toLocaleString('fr-FR') + (s.duration ? ` (${s.duration})` : '')),
+    };
+
+    const newSlots = wanted.filter(s => !notifiedSlotIds.has(s.id));
 
     if (newSlots.length === 0) {
-      lastStatus = `Aucun créneau — dernier check: ${lastCheck.toLocaleString('fr-FR')}`;
-      console.log('[main] Aucun nouveau créneau disponible');
+      lastStatus = `Aucun créneau voulu (${slots.length} total trouvé) — ${lastCheck.toLocaleString('fr-FR')}`;
+      console.log(`[main] Aucun créneau correspondant (${slots.length} slots trouvés au total)`);
       return;
     }
 
     console.log(`[main] 🎯 ${newSlots.length} nouveau(x) créneau(x) trouvé(s) !`);
 
     if (config.autoBook) {
-      const target = newSlots[0];
+      const target = newSlots[0]!;
       console.log(`[main] Tentative de réservation: ${target.date.toLocaleString('fr-FR')}`);
 
       const booked = await bookSlot(target);
@@ -68,10 +75,10 @@ function startHttpServer(): void {
       lastCheck: lastCheck?.toISOString() ?? null,
       lastStatus,
       autoBook: config.autoBook,
+      debug: lastDebug,
     });
   });
 
-  // UptimeRobot pings this endpoint every 5 min to keep the service alive
   app.get('/health', (_req, res) => res.send('ok'));
 
   app.listen(port, () => {
@@ -86,7 +93,6 @@ async function main(): Promise<void> {
   console.log(`   Critères: Samedi, Dimanche, et tous les jours ≥ 18h`);
 
   startHttpServer();
-
   await check();
 
   const cronExpr = `*/${config.checkIntervalMinutes} * * * *`;
