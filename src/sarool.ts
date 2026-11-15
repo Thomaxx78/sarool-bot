@@ -79,6 +79,8 @@ async function login(page: Page): Promise<boolean> {
   return true;
 }
 
+const WEEKS_AHEAD = parseInt(process.env.WEEKS_AHEAD ?? '6', 10);
+
 export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Slot[] }> {
   const ctx = await newContext();
   const page = await ctx.newPage();
@@ -95,13 +97,41 @@ export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Sl
       await page.goto(`${BASE}/agenda`, { waitUntil: 'domcontentloaded' });
     }
 
-    // Wait for DayPilot UpdatePanel to finish rendering events
+    // Wait for DayPilot to render
     await page.waitForSelector('.F3_plncal_eventDisposE, .F3_plncal_main', { timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(3000);
 
-    const slots = await extractSlots(page);
-    console.log(`[sarool] ${slots.length} créneau(x) total trouvé(s)`);
-    slots.forEach(s => console.log(`[sarool]   → ${s.date.toLocaleString('fr-FR')} (${s.duration ?? '?'})`));
+    const allSlots: Slot[] = [];
+
+    for (let week = 0; week < WEEKS_AHEAD; week++) {
+      if (week > 0) {
+        // Click the "next week" button in DayPilot
+        const nextBtn = await page.$('.F3_plncal_nav_next, [class*="nav_next"], [title*="suivant"], [title*="next"], [aria-label*="suivant"], [aria-label*="next"]');
+        if (!nextBtn) {
+          console.log(`[sarool] Bouton semaine suivante introuvable à la semaine ${week}, arrêt`);
+          break;
+        }
+        await nextBtn.click();
+        await page.waitForTimeout(2500);
+      }
+
+      const weekSlots = await extractSlots(page);
+      console.log(`[sarool] Semaine +${week}: ${weekSlots.length} créneau(x)`);
+      weekSlots.forEach(s => console.log(`[sarool]   → ${s.date.toLocaleString('fr-FR')} (${s.duration ?? '?'})`));
+      allSlots.push(...weekSlots);
+    }
+
+    // Global deduplicate across all weeks
+    const seen = new Set<string>();
+    const slots = allSlots.filter(s => {
+      const roundedMin = Math.round(s.date.getMinutes() / 15) * 15;
+      const key = `${s.date.toDateString()}-${s.date.getHours()}h${roundedMin}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    console.log(`[sarool] ${slots.length} créneau(x) total sur ${WEEKS_AHEAD} semaines`);
 
     const wanted = slots.filter(s => isWantedSlot(s.date));
     console.log(`[sarool] ${wanted.length} créneau(x) correspondant(s) aux critères (week-end / ≥18h)`);
