@@ -79,7 +79,7 @@ async function login(page: Page): Promise<boolean> {
   return true;
 }
 
-const WEEKS_AHEAD = parseInt(process.env.WEEKS_AHEAD ?? '6', 10);
+const WEEKS_AHEAD = parseInt(process.env.WEEKS_AHEAD ?? '8', 10);
 
 export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Slot[] }> {
   const ctx = await newContext();

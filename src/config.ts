@@ -23,7 +23,7 @@ export const config = {
 // Créneaux recherchés :
 // - Samedi (6) toute la journée
 // - Dimanche (0) toute la journée
-// - Tous les jours à partir de 18h
+// - Tous les jours entre 18h et 20h
 export function isWantedSlot(date: Date): boolean {
   const day = date.getDay(); // 0=dim, 6=sam
   const hour = date.getHours();
@@ -31,7 +31,7 @@ export function isWantedSlot(date: Date): boolean {
   // TEST MODE: accept all slots to validate detection pipeline
   if (process.env.TEST_ALL_SLOTS === 'true') return true;
 
-  if (day === 6 || day === 0) return true; // Week-end
-  if (hour >= 18) return true;             // En soirée (tous les jours)
+  if (day === 6 || day === 0) return true;              // Week-end
+  if (hour >= 18 && hour <= 20) return true;            // En soirée 18h-20h (tous les jours)
   return false;
 }
