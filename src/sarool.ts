@@ -265,7 +265,9 @@ async function extractSlots(page: Page): Promise<Slot[]> {
     // Filter: driving lessons are between 7h-21h and ≤ 4h duration
     if (hour < 7 || hour >= 21) return false;
     if (durationMin > 240) return false;
-    const key = s.date.toISOString();
+    // Deduplicate by day + hour + 15-min bucket (handles multiple monitors at same slot)
+    const roundedMin = Math.round(s.date.getMinutes() / 15) * 15;
+    const key = `${s.date.toDateString()}-${s.date.getHours()}h${roundedMin}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
