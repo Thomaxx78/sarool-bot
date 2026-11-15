@@ -166,51 +166,68 @@ async function detectDisplayedMonday(page: Page): Promise<Date> {
   return monday;
 }
 
-// Try multiple selectors to find the DayPilot next-week navigation button
-async function findNextWeekButton(page: Page): Promise<{ el: import('playwright').ElementHandle | null; allButtons: string[] }> {
+// Navigate DayPilot to the next week — returns true if succeeded
+async function navigateToNextWeek(page: Page): Promise<{ success: boolean; allButtons: string[] }> {
+  // Method 1: DOM selectors
   const selectors = [
-    '.F3_plncal_nav_next',
-    '[class*="nav_next"]',
-    '[class*="plncal_next"]',
-    'input[value=">"]',
-    'input[value=">>"]',
-    'input[value="→"]',
-    'input[value=">|"]',
-    '[onclick*="next"]',
-    '[onclick*="Next"]',
-    '[onclick*="forward"]',
-    'a[href*="next"]',
-    'button[class*="next"]',
-    '[class*="F3_plncal_nav"]',
+    '.F3_plncal_nav_next', '[class*="nav_next"]', '[class*="plncal_next"]',
+    'input[value=">"]', 'input[value=">>"]', 'input[value=">|"]',
+    '[onclick*="next"]', '[onclick*="Next"]', '[class*="F3_plncal_nav"]',
   ];
   for (const sel of selectors) {
     const el = await page.$(sel);
     if (el) {
-      console.log(`[sarool] Bouton suivant trouvé: "${sel}"`);
-      return { el, allButtons: [] };
+      console.log(`[sarool] Nav: bouton trouvé "${sel}"`);
+      await el.click();
+      return { success: true, allButtons: [] };
     }
   }
-  // Look inside the DayPilot calendar for clickable elements
-  const allButtons = await page.evaluate(() => {
-    const results: string[] = [];
-    // All elements inside DayPilot with onclick or cursor:pointer
-    const calEl = document.querySelector('.F3_plncal_main, .F3_plncal_corner, [class*="F3_plncal"]')?.parentElement;
-    const scope = calEl ?? document;
-    Array.from(scope.querySelectorAll('*'))
-      .filter(el => {
-        const style = (el as HTMLElement).style?.cursor;
-        const onclick = el.getAttribute('onclick');
-        const cls = el.className ?? '';
-        return onclick || style === 'pointer' || (typeof cls === 'string' && cls.includes('nav'));
-      })
-      .slice(0, 30)
-      .forEach(el => {
-        const inp = el as HTMLInputElement;
-        results.push(`${el.tagName}.${(el.className + '').slice(0, 40)}|onclick="${el.getAttribute('onclick')?.slice(0, 50) ?? ''}"|cursor="${(el as HTMLElement).style?.cursor ?? ''}"`);
-      });
-    return results;
+
+  // Method 2: DayPilot JavaScript API
+  const jsNavigated = await page.evaluate((): boolean => {
+    const dp = (window as any).DayPilot;
+    if (!dp) return false;
+    const instances = dp.Calendar?.instances ?? [];
+    for (const cal of instances) {
+      if (typeof cal.navigate === 'function') { cal.navigate('Next'); return true; }
+      if (typeof cal.goNext === 'function') { cal.goNext(); return true; }
+      if (typeof cal.commandCallBack === 'function') { cal.commandCallBack('navigate', { offset: 1 }); return true; }
+    }
+    // Try __doPostBack with DayPilot-style args
+    const doPostBack = (window as any).__doPostBack;
+    if (typeof doPostBack === 'function') {
+      // Find DayPilot control ID
+      const calEl = document.querySelector('[id*="plncal"], [id*="DayPilot"]');
+      if (calEl) { doPostBack(calEl.id, 'Navigate:Next'); return true; }
+    }
+    return false;
   });
-  return { el: null, allButtons };
+  if (jsNavigated) {
+    console.log('[sarool] Nav: DayPilot JS navigation appelée');
+    return { success: true, allButtons: [] };
+  }
+
+  // Method 3: coordinate click on the right side of the calendar header
+  const navCoord = await page.evaluate((): { x: number; y: number } | null => {
+    const corner = document.querySelector('.F3_plncal_corner') as HTMLElement | null;
+    if (!corner) return null;
+    const r = corner.getBoundingClientRect();
+    // The "next" arrow is usually just to the RIGHT of the corner header
+    return { x: r.right + 30, y: r.top + r.height / 2 };
+  });
+  if (navCoord) {
+    console.log(`[sarool] Nav: clic coordonnée x=${Math.round(navCoord.x)} y=${Math.round(navCoord.y)}`);
+    await page.mouse.click(navCoord.x, navCoord.y);
+    return { success: true, allButtons: [] };
+  }
+
+  // Log all F3_plncal elements for diagnosis
+  const allButtons = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('[class*="F3_plncal"]'))
+      .map(el => `${el.tagName}.${(el.className + '').replace(/\s+/g, '.').slice(0, 60)}`)
+      .slice(0, 30)
+  );
+  return { success: false, allButtons };
 }
 
 export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Slot[]; debugInfo: { detectedMonday: string; ajaxDates: string[]; nextBtnFound: boolean; navButtons: string[]; htmlDates: string[] } }> {
@@ -284,14 +301,14 @@ export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Sl
 
     for (let week = 0; week < WEEKS_AHEAD; week++) {
       if (week > 0) {
-        const { el: nextBtn, allButtons } = await findNextWeekButton(page);
+        const { success, allButtons } = await navigateToNextWeek(page);
         if (allButtons.length > 0) navButtonsForDebug = allButtons;
-        if (!nextBtn) {
+        if (!success) {
           nextBtnFound = false;
-          console.log(`[sarool] Bouton semaine suivante introuvable à la semaine ${week}, arrêt`);
+          console.log(`[sarool] Navigation semaine suivante impossible à semaine ${week}, arrêt`);
           break;
         }
-        await nextBtn.click();
+        nextBtnFound = true;
         await page.waitForTimeout(2500);
       }
 
