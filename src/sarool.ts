@@ -28,8 +28,8 @@ async function newContext(): Promise<BrowserContext> {
   if (context) await context.close().catch(() => {});
   context = await br.newContext({
     userAgent:
-      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
-    viewport: { width: 390, height: 844 },
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    viewport: { width: 1280, height: 800 },
     locale: 'fr-FR',
   });
   return context;
@@ -229,16 +229,19 @@ export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Sl
 
     // Scan full HTML for any date pattern (DayPilot may use various formats)
     const htmlDates = await page.evaluate((): string[] => {
-      const html = document.body.innerHTML;
+      const html = document.documentElement.innerHTML; // includes head+body
       const patterns = [
         /202[5-9]-\d{2}-\d{2}/g,          // ISO: 2026-12-04
         /\d{2}\/\d{2}\/202[5-9]/g,         // FR: 04/12/2026
         /202[5-9]\/\d{2}\/\d{2}/g,         // US: 2026/12/04
         /new Date\(\s*202[5-9]\s*,\s*\d+\s*,\s*\d+/g,  // JS: new Date(2026, 11, 4)
+        /202[5-9]\d{4}/g,                   // yyyymmdd: 20261204
+        /"start"\s*:\s*"[^"]*202[5-9]/g,   // JSON start field
+        /"date"\s*:\s*"[^"]*202[5-9]/g,    // JSON date field
       ];
       const found = new Set<string>();
       patterns.forEach(p => (html.match(p) ?? []).forEach(m => found.add(m)));
-      return [...found].slice(0, 10);
+      return [...found].slice(0, 15);
     });
     console.log(`[sarool] Dates trouvées dans HTML: ${htmlDates.join(' | ')}`);
 
