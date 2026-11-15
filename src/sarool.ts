@@ -83,53 +83,54 @@ const WEEKS_AHEAD = parseInt(process.env.WEEKS_AHEAD ?? '8', 10);
 
 // Detect the Monday date of the week currently displayed in DayPilot
 async function detectDisplayedMonday(page: Page): Promise<Date> {
-  const info = await page.evaluate((): { navText: string[]; colHeaderDates: string[]; url: string } => {
-    // Try to find date info from navigation header or column headers
-    const navText = Array.from(document.querySelectorAll('[class*="nav"], [class*="corner"], [class*="header"], [class*="title"]'))
-      .map(el => el.textContent?.trim() ?? '')
-      .filter(t => t.length > 0 && /\d/.test(t))
+  const info = await page.evaluate((): {
+    isoDatesInScripts: string[];
+    hiddenInputDates: string[];
+    eventDataAttrs: string[];
+    dpJsKeys: string[];
+  } => {
+    // Method 1: scan inline scripts for ISO date patterns (DayPilot serializes events as JSON)
+    const isoDatesInScripts: string[] = [];
+    document.querySelectorAll('script').forEach(s => {
+      const matches = (s.textContent ?? '').match(/202[5-9]-\d{2}-\d{2}T\d{2}:\d{2}/g) ?? [];
+      isoDatesInScripts.push(...matches);
+    });
+
+    // Method 2: hidden input fields that might carry the current date
+    const hiddenInputDates = Array.from(document.querySelectorAll('input[type="hidden"]'))
+      .map(el => `${(el as HTMLInputElement).name}=${(el as HTMLInputElement).value}`)
+      .filter(v => /202[5-9]/.test(v) || /\d{8}/.test(v))
       .slice(0, 10);
-    const colHeaderDates = Array.from(document.querySelectorAll('.F3_plncal_colheader_base, [class*="colheader"]'))
-      .map(el => el.textContent?.trim() ?? '');
-    return { navText, colHeaderDates, url: window.location.href };
+
+    // Method 3: data attributes on event elements
+    const eventDataAttrs = Array.from(document.querySelectorAll('.F3_plncal_eventDisposE'))
+      .flatMap(el => Array.from(el.attributes).map(a => `${a.name}=${a.value}`))
+      .filter(a => /date|start|end|time/i.test(a));
+
+    // Method 4: DayPilot JS global objects
+    const dpJsKeys = Object.getOwnPropertyNames(window)
+      .filter(k => /daypilot|plncal|F3/i.test(k))
+      .slice(0, 10);
+
+    return { isoDatesInScripts: isoDatesInScripts.slice(0, 20), hiddenInputDates, eventDataAttrs, dpJsKeys };
   });
 
-  console.log(`[sarool] navText: ${info.navText.slice(0, 5).join(' | ')}`);
-  console.log(`[sarool] colHeaderDates: ${info.colHeaderDates.slice(0, 7).join(' | ')}`);
+  console.log(`[sarool] ISO dates in scripts: ${info.isoDatesInScripts.slice(0, 5).join(' | ')}`);
+  console.log(`[sarool] Hidden date inputs: ${info.hiddenInputDates.join(' | ')}`);
+  console.log(`[sarool] Event data attrs: ${info.eventDataAttrs.join(' | ')}`);
+  console.log(`[sarool] DayPilot JS keys: ${info.dpJsKeys.join(' | ')}`);
 
-  // Try to parse a date from column headers (e.g. "LUNDI 04/12" or "04/12")
-  for (const h of [...info.colHeaderDates, ...info.navText]) {
-    const dm = h.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?/);
-    if (dm) {
-      const year = dm[3] ? parseInt(dm[3]) : new Date().getFullYear();
-      const date = new Date(year, parseInt(dm[2]!) - 1, parseInt(dm[1]!));
-      if (!isNaN(date.getTime()) && date.getFullYear() >= 2026) {
-        // Determine which day of week this header represents, infer Monday
-        const DAY_IDX: Record<string, number> = {
-          'LUNDI': 0, 'LUN': 0, 'MARDI': 1, 'MAR': 1, 'MERCREDI': 2, 'MER': 2,
-          'JEUDI': 3, 'JEU': 3, 'VENDREDI': 4, 'VEN': 4, 'SAMEDI': 5, 'SAM': 5, 'DIMANCHE': 6, 'DIM': 6,
-        };
-        const dayWord = h.split(/[\s\/\-]/)[0]?.toUpperCase() ?? '';
-        const dayIdx = DAY_IDX[dayWord] ?? (info.colHeaderDates.indexOf(h));
-        const monday = new Date(date);
-        monday.setDate(date.getDate() - dayIdx);
-        monday.setHours(0, 0, 0, 0);
-        console.log(`[sarool] Semaine détectée depuis "${h}": lundi = ${monday.toLocaleDateString('fr-FR')}`);
-        return monday;
-      }
-    }
-  }
-
-  // Try URL for a date param (e.g. ?date=2026-12-04)
-  const urlDate = info.url.match(/date[=\-](\d{4}[-\/]\d{2}[-\/]\d{2})/);
-  if (urlDate) {
-    const d = new Date(urlDate[1]!);
+  // Extract first ISO date from scripts — this is the most reliable source
+  if (info.isoDatesInScripts.length > 0) {
+    const isoStr = info.isoDatesInScripts[0]!;
+    const d = new Date(isoStr);
     if (!isNaN(d.getTime())) {
       const dow = d.getDay();
-      d.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1));
-      d.setHours(0, 0, 0, 0);
-      console.log(`[sarool] Semaine détectée depuis URL: lundi = ${d.toLocaleDateString('fr-FR')}`);
-      return d;
+      const monday = new Date(d);
+      monday.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1));
+      monday.setHours(0, 0, 0, 0);
+      console.log(`[sarool] Semaine détectée depuis script: lundi = ${monday.toLocaleDateString('fr-FR')}`);
+      return monday;
     }
   }
 
@@ -139,7 +140,7 @@ async function detectDisplayedMonday(page: Page): Promise<Date> {
   const monday = new Date(today);
   monday.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1));
   monday.setHours(0, 0, 0, 0);
-  console.log(`[sarool] Semaine non détectée, fallback semaine courante: lundi = ${monday.toLocaleDateString('fr-FR')}`);
+  console.log(`[sarool] Semaine non détectée — fallback semaine courante: lundi = ${monday.toLocaleDateString('fr-FR')}`);
   return monday;
 }
 
@@ -152,9 +153,12 @@ async function findNextWeekButton(page: Page): Promise<import('playwright').Elem
     'input[value=">"]',
     'input[value=">>"]',
     'input[value="→"]',
+    'input[value=">|"]',
     '[onclick*="next"]',
     '[onclick*="Next"]',
+    '[onclick*="forward"]',
     'a[href*="next"]',
+    'button[class*="next"]',
   ];
   for (const sel of selectors) {
     const el = await page.$(sel);
@@ -163,13 +167,16 @@ async function findNextWeekButton(page: Page): Promise<import('playwright').Elem
       return el;
     }
   }
-  // Log what navigation elements exist for debugging
-  const navEls = await page.evaluate(() =>
-    Array.from(document.querySelectorAll('[class*="nav"], [class*="plncal_n"]'))
-      .map(el => `${el.tagName}.${el.className.trim().replace(/\s+/g, '.')} value="${(el as HTMLInputElement).value ?? ''}"`)
-      .slice(0, 15)
+  // Log ALL inputs and buttons to identify the right selector
+  const allControls = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('input[type="button"], input[type="submit"], button, a[onclick]'))
+      .map(el => {
+        const inp = el as HTMLInputElement;
+        return `${el.tagName}[class="${el.className.trim()}"][value="${inp.value ?? ''}"][onclick="${el.getAttribute('onclick')?.slice(0, 50) ?? ''}"]`;
+      })
+      .slice(0, 20)
   );
-  console.log(`[sarool] Éléments nav trouvés: ${navEls.join(' | ')}`);
+  console.log(`[sarool] Tous les boutons: ${allControls.join('\n  ')}`);
   return null;
 }
 
