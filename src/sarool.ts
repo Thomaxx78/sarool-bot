@@ -256,10 +256,15 @@ async function extractSlots(page: Page): Promise<Slot[]> {
     });
   }
 
-  // Deduplicate by date+time
+  // Deduplicate by date+time, filter out bogus slots
   const seen = new Set<string>();
   return slots.filter(s => {
     if (isNaN(s.date.getTime())) return false;
+    const hour = s.date.getHours();
+    const durationMin = parseInt(s.duration ?? '60');
+    // Filter: driving lessons are between 7h-21h and ≤ 4h duration
+    if (hour < 7 || hour >= 21) return false;
+    if (durationMin > 240) return false;
     const key = s.date.toISOString();
     if (seen.has(key)) return false;
     seen.add(key);
