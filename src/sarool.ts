@@ -121,235 +121,107 @@ export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Sl
   }
 }
 
-interface DayPilotEventData {
-  id: string;
-  start: string;
-  end: string;
-  text?: string;
-  resource?: string;
-}
-
 async function extractSlots(page: Page): Promise<Slot[]> {
-  // Strategy 1: read DayPilot event data from the JavaScript object in the page
-  const dpEvents = await page.evaluate((): DayPilotEventData[] | null => {
-    // DayPilot stores events in the control's client-side object
-    // Try various access patterns used by different DayPilot versions
-    const win = window as unknown as Record<string, unknown>;
+  // Step 1: count F3_plncal_eventDisposE elements
+  const pageState = await page.evaluate((): {
+    eventCount: number;
+    colHeaders: string[];
+    rowHeaders: string[];
+    events: Array<{ top: number; height: number; left: string; colHeader: string }>;
+  } => {
+    const eventEls = Array.from(document.querySelectorAll('.F3_plncal_eventDisposE'));
+    const colHeaders = Array.from(document.querySelectorAll('.F3_plncal_colheader_base'))
+      .map(el => el.textContent?.trim() ?? '');
+    const rowHeaders = Array.from(document.querySelectorAll('.F3_plncal_rowheader_inner'))
+      .map(el => el.textContent?.trim() ?? '');
 
-    // Pattern A: global dp object
-    for (const key of Object.keys(win)) {
-      const obj = win[key] as Record<string, unknown> | null;
-      if (obj && typeof obj === 'object' && 'events' in obj) {
-        const events = (obj as Record<string, unknown>)['events'];
-        if (events && typeof events === 'object' && 'list' in (events as object)) {
-          const list = ((events as Record<string, unknown>)['list']) as unknown[];
-          if (Array.isArray(list) && list.length > 0) return list as DayPilotEventData[];
-        }
-      }
-    }
-
-    // Pattern B: DayPilot namespace
-    if ('DayPilot' in win) {
-      const dp = win['DayPilot'] as Record<string, unknown>;
-      if ('Calendar' in dp) {
-        const cal = dp['Calendar'] as Record<string, unknown>;
-        if ('instances' in cal) {
-          const instances = cal['instances'] as Record<string, unknown>;
-          for (const id of Object.keys(instances)) {
-            const inst = instances[id] as Record<string, unknown>;
-            const events = inst['events'] as Record<string, unknown> | undefined;
-            if (events && Array.isArray(events['list']) && (events['list'] as unknown[]).length > 0) {
-              return events['list'] as DayPilotEventData[];
-            }
-          }
-        }
-      }
-    }
-
-    return null;
-  });
-
-  if (dpEvents && dpEvents.length > 0) {
-    console.log(`[sarool] DayPilot events: ${dpEvents.length} trouvés`);
-    return dpEvents.map(e => ({
-      id: String(e.id),
-      date: new Date(e.start),
-      duration: computeDuration(new Date(e.start), new Date(e.end)),
-      instructor: e.text ?? e.resource,
-    })).filter(s => !isNaN(s.date.getTime()));
-  }
-
-  // Strategy 2: parse DayPilot event data from inline scripts
-  const scriptEvents = await page.evaluate((): DayPilotEventData[] => {
-    const results: DayPilotEventData[] = [];
-    document.querySelectorAll('script:not([src])').forEach((s: Element) => {
-      const text = (s as HTMLScriptElement).textContent ?? '';
-      // DayPilot initializes with: .events.list([...]) or .update({events:[...]})
-      const matches = text.matchAll(/"id"\s*:\s*"([^"]+)"[^}]*"start"\s*:\s*"([^"]+)"[^}]*"end"\s*:\s*"([^"]+)"/g);
-      for (const m of matches) {
-        results.push({ id: m[1]!, start: m[2]!, end: m[3]! });
-      }
-    });
-    return results;
-  });
-
-  if (scriptEvents.length > 0) {
-    console.log(`[sarool] Script events: ${scriptEvents.length} trouvés`);
-    return scriptEvents.map(e => ({
-      id: e.id,
-      date: new Date(e.start),
-      duration: computeDuration(new Date(e.start), new Date(e.end)),
-      instructor: undefined,
-    })).filter(s => !isNaN(s.date.getTime()));
-  }
-
-  // Strategy 3: derive date/time from DayPilot CSS positions
-  // Each event div has position:absolute with top=px offset from calendar start
-  // Column index = day of week, top position = time offset
-  const cssSlots = await page.evaluate((): Array<{ colIndex: number; topPx: number; heightPx: number }> => {
-    const results: Array<{ colIndex: number; topPx: number; heightPx: number }> = [];
-
-    // Find the calendar scroll container
-    const scroll = document.querySelector('.F3_plncal_scroll');
-    if (!scroll) return results;
-
-    // Find column containers (one per visible day)
-    const columns = Array.from(scroll.querySelectorAll('[style*="position: absolute"][style*="left"]'))
-      .filter(el => el.querySelector('.F3_plncal_eventDisposE'));
-
-    // Find calendar height and row headers to determine time scale
-    const rowHeaders = Array.from(document.querySelectorAll('.F3_plncal_rowheader_inner'));
-    const calendarHeight = (scroll as HTMLElement).offsetHeight;
-
-    document.querySelectorAll('.F3_plncal_eventDisposE').forEach((el: Element) => {
+    const events = eventEls.map(el => {
       const style = (el as HTMLElement).style;
-      const top = parseInt(style.top ?? '0');
-      const height = parseInt(style.height ?? '32');
-
-      // Find which column this event is in
-      let colIndex = 0;
-      let parent: Element | null = el.parentElement;
-      while (parent && parent !== scroll) {
-        const siblings = parent.parentElement ? Array.from(parent.parentElement.children) : [];
-        const idx = siblings.indexOf(parent);
-        if (idx > 0) { colIndex = idx - 1; break; }
-        parent = parent.parentElement;
+      // Find the column this event belongs to by checking parent chain
+      let colHeader = '';
+      let ancestor: Element | null = el.parentElement;
+      while (ancestor) {
+        const idx = ancestor.parentElement
+          ? Array.from(ancestor.parentElement.children).indexOf(ancestor)
+          : -1;
+        if (idx > 0 && colHeaders[idx - 1]) {
+          colHeader = colHeaders[idx - 1]!;
+          break;
+        }
+        ancestor = ancestor.parentElement;
       }
-
-      results.push({ colIndex, topPx: top, heightPx: height });
+      return {
+        top: parseInt(style.top ?? '0'),
+        height: parseInt(style.height ?? '32'),
+        left: style.left ?? '0%',
+        colHeader,
+      };
     });
 
-    return results;
+    return { eventCount: eventEls.length, colHeaders, rowHeaders, events };
   });
 
-  if (cssSlots.length > 0) {
-    console.log(`[sarool] CSS slots: ${cssSlots.length} trouvés, calcul des dates...`);
+  console.log(`[sarool] eventDisposE count: ${pageState.eventCount}`);
+  console.log(`[sarool] colHeaders: ${pageState.colHeaders.join(' | ')}`);
+  console.log(`[sarool] rowHeaders (first 4): ${pageState.rowHeaders.slice(0, 4).join(' | ')}`);
+  pageState.events.forEach((e, i) =>
+    console.log(`[sarool] event[${i}]: top=${e.top}px height=${e.height}px col="${e.colHeader}"`)
+  );
 
-    // Get the calendar's visible week start and time scale
-    const calInfo = await page.evaluate((): { weekStart: string; hourHeight: number; startHour: number } | null => {
-      // Read week start from column headers (e.g. "LUNDI 15/11")
-      const headers = Array.from(document.querySelectorAll('.F3_plncal_colheader_base'));
-      const firstHeader = headers[0]?.textContent ?? '';
-      const dateMatch = firstHeader.match(/(\d{2})\/(\d{2})\/(\d{4})|(\d{2})\/(\d{2})/);
+  if (pageState.eventCount === 0) return [];
 
-      // Read first row header to find start hour
-      const firstRow = document.querySelector('.F3_plncal_rowheader_inner');
-      const firstHourText = firstRow?.textContent?.trim() ?? '8';
-      const startHour = parseInt(firstHourText.replace('h', '').replace(':', ''));
+  // Step 2: build time scale from row headers (e.g. "8h", "9h", "10h")
+  const slots: Slot[] = [];
+  const rowTimes: number[] = pageState.rowHeaders
+    .map(h => {
+      const m = h.match(/(\d+)h?:?(\d*)/);
+      return m ? parseInt(m[1]!) * 60 + parseInt(m[2] || '0') : -1;
+    })
+    .filter(t => t >= 0);
 
-      // Calculate pixels per hour by looking at row height
-      const rows = Array.from(document.querySelectorAll('.F3_plncal_rowheader_inner'));
-      let hourHeight = 32; // default
-      if (rows.length >= 2) {
-        const r1 = rows[0] as HTMLElement;
-        const r2 = rows[1] as HTMLElement;
-        hourHeight = r2.offsetTop - r1.offsetTop || 32;
-      }
+  // Compute pixels per minute from row heights
+  // We need actual pixel positions of row headers — do a second evaluate
+  const rowPixels = await page.evaluate((): number[] => {
+    return Array.from(document.querySelectorAll('.F3_plncal_rowheader_inner'))
+      .map(el => (el as HTMLElement).offsetTop);
+  });
 
-      return { weekStart: new Date().toISOString().split('T')[0]!, hourHeight, startHour };
-    });
-
-    console.log('[sarool] calInfo:', JSON.stringify(calInfo));
-
-    const today = new Date();
-    const dayOfWeek = today.getDay(); // 0=sun
-    const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-    const monday = new Date(today);
-    monday.setDate(today.getDate() + mondayOffset);
-
-    const hourHeight = calInfo?.hourHeight ?? 32;
-    const startHour = calInfo?.startHour ?? 8;
-
-    return cssSlots.map((s, i) => {
-      const slotDay = new Date(monday);
-      slotDay.setDate(monday.getDate() + s.colIndex);
-      const totalMinutes = startHour * 60 + Math.round((s.topPx / hourHeight) * 60);
-      slotDay.setHours(Math.floor(totalMinutes / 60), totalMinutes % 60, 0, 0);
-      const durationMin = Math.round((s.heightPx / hourHeight) * 60);
-      return {
-        id: `css-${s.colIndex}-${s.topPx}`,
-        date: slotDay,
-        duration: `${durationMin}min`,
-        instructor: undefined,
-      };
-    }).filter(s => !isNaN(s.date.getTime()));
+  let pxPerMinute = 32 / 60; // fallback: 32px per hour
+  if (rowPixels.length >= 2 && rowTimes.length >= 2) {
+    const dpx = rowPixels[1]! - rowPixels[0]!;
+    const dmin = rowTimes[1]! - rowTimes[0]!;
+    if (dpx > 0 && dmin > 0) pxPerMinute = dpx / dmin;
   }
+  const startMinutes = rowTimes[0] ?? 480; // default 8h
+  console.log(`[sarool] pxPerMinute=${pxPerMinute.toFixed(3)} startAt=${Math.floor(startMinutes/60)}h${startMinutes%60}`);
 
-  console.warn('[sarool] Aucun créneau trouvé — URL:', page.url());
-  return [];
-}
-
-function computeDuration(start: Date, end: Date): string {
-  const mins = Math.round((end.getTime() - start.getTime()) / 60000);
-  return `${mins}min`;
-}
-
-async function parseSlotElement(
-  el: Awaited<ReturnType<Page['$']>>,
-  selector: string
-): Promise<Slot | null> {
-  if (!el) return null;
-
-  try {
-    const text = await el.textContent() ?? '';
-    const dataDate = await el.getAttribute('data-date');
-    const dataStart = await el.getAttribute('data-start');
-    const title = await el.getAttribute('title');
-
-    const dateStr = dataDate ?? dataStart;
-    let date: Date | null = null;
-
-    if (dateStr) {
-      date = new Date(dateStr);
-    } else {
-      // Try to parse date from text content
-      // Patterns: "Samedi 15 novembre 2024 à 10:00", "15/11/2024 10h00"
-      const frMatch = text.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\s+(\d{1,2})h?:?(\d{2})?/);
-      const longMatch = text.match(/(\d{1,2})\s+\w+\s+\d{4}\s+à\s+(\d{1,2}):(\d{2})/);
-
-      if (frMatch) {
-        date = new Date(`${frMatch[3]}-${frMatch[2].padStart(2, '0')}-${frMatch[1].padStart(2, '0')}T${frMatch[4].padStart(2, '0')}:${(frMatch[5] ?? '00').padStart(2, '0')}`);
-      } else if (longMatch) {
-        date = new Date(text.replace(/à\s+/, ''));
-      }
+  // Step 3: map each event to a date
+  for (const ev of pageState.events) {
+    // Parse column header date: "LUNDI 16/11" or "SAM. 22/11/2026"
+    const dateMatch = ev.colHeader.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/);
+    if (!dateMatch) {
+      console.log(`[sarool] Pas de date dans le header "${ev.colHeader}", skip`);
+      continue;
     }
+    const year = dateMatch[3] ? parseInt(dateMatch[3]) : new Date().getFullYear();
+    const month = parseInt(dateMatch[2]!) - 1;
+    const day = parseInt(dateMatch[1]!);
 
-    if (!date || isNaN(date.getTime())) return null;
+    const offsetMinutes = ev.top / pxPerMinute;
+    const totalMinutes = startMinutes + offsetMinutes;
+    const durationMin = Math.round(ev.height / pxPerMinute);
 
-    // Try to find duration and instructor from text or nearby elements
-    const durationMatch = (title ?? text).match(/(\d+)\s*(?:min|h)/i);
-    const duration = durationMatch ? durationMatch[0] : undefined;
+    const date = new Date(year, month, day, Math.floor(totalMinutes / 60), Math.round(totalMinutes % 60), 0, 0);
 
-    return {
-      id: `${selector}-${date.getTime()}`,
+    slots.push({
+      id: `${ev.colHeader}-${ev.top}`,
       date,
-      duration,
+      duration: `${durationMin}min`,
       instructor: undefined,
-      bookingElement: undefined,
-    };
-  } catch {
-    return null;
+    });
   }
+
+  return slots.filter(s => !isNaN(s.date.getTime()));
 }
 
 export async function bookSlot(slot: Slot): Promise<boolean> {
