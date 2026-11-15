@@ -145,7 +145,7 @@ async function detectDisplayedMonday(page: Page): Promise<Date> {
 }
 
 // Try multiple selectors to find the DayPilot next-week navigation button
-async function findNextWeekButton(page: Page): Promise<import('playwright').ElementHandle | null> {
+async function findNextWeekButton(page: Page): Promise<{ el: import('playwright').ElementHandle | null; allButtons: string[] }> {
   const selectors = [
     '.F3_plncal_nav_next',
     '[class*="nav_next"]',
@@ -159,28 +159,28 @@ async function findNextWeekButton(page: Page): Promise<import('playwright').Elem
     '[onclick*="forward"]',
     'a[href*="next"]',
     'button[class*="next"]',
+    '[class*="F3_plncal_nav"]',
   ];
   for (const sel of selectors) {
     const el = await page.$(sel);
     if (el) {
       console.log(`[sarool] Bouton suivant trouvé: "${sel}"`);
-      return el;
+      return { el, allButtons: [] };
     }
   }
-  // Log ALL inputs and buttons to identify the right selector
-  const allControls = await page.evaluate(() =>
-    Array.from(document.querySelectorAll('input[type="button"], input[type="submit"], button, a[onclick]'))
+  // Log ALL inputs and buttons — returned in debugInfo for the status endpoint
+  const allButtons = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('input[type="button"], input[type="submit"], input[type="image"], button, a[onclick], [class*="nav"]'))
       .map(el => {
         const inp = el as HTMLInputElement;
-        return `${el.tagName}[class="${el.className.trim()}"][value="${inp.value ?? ''}"][onclick="${el.getAttribute('onclick')?.slice(0, 50) ?? ''}"]`;
+        return `${el.tagName}.${el.className.replace(/\s+/g, '.')}|v="${inp.value ?? ''}"|onclick="${el.getAttribute('onclick')?.slice(0, 60) ?? ''}"`;
       })
-      .slice(0, 20)
+      .slice(0, 25)
   );
-  console.log(`[sarool] Tous les boutons: ${allControls.join('\n  ')}`);
-  return null;
+  return { el: null, allButtons };
 }
 
-export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Slot[]; debugInfo: { detectedMonday: string; ajaxDates: string[]; nextBtnFound: boolean } }> {
+export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Slot[]; debugInfo: { detectedMonday: string; ajaxDates: string[]; nextBtnFound: boolean; navButtons: string[]; htmlDates: string[] } }> {
   const ctx = await newContext();
   const page = await ctx.newPage();
 
@@ -227,12 +227,29 @@ export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Sl
       displayedMonday = await detectDisplayedMonday(page);
     }
 
+    // Scan full HTML for any date pattern (DayPilot may use various formats)
+    const htmlDates = await page.evaluate((): string[] => {
+      const html = document.body.innerHTML;
+      const patterns = [
+        /202[5-9]-\d{2}-\d{2}/g,          // ISO: 2026-12-04
+        /\d{2}\/\d{2}\/202[5-9]/g,         // FR: 04/12/2026
+        /202[5-9]\/\d{2}\/\d{2}/g,         // US: 2026/12/04
+        /new Date\(\s*202[5-9]\s*,\s*\d+\s*,\s*\d+/g,  // JS: new Date(2026, 11, 4)
+      ];
+      const found = new Set<string>();
+      patterns.forEach(p => (html.match(p) ?? []).forEach(m => found.add(m)));
+      return [...found].slice(0, 10);
+    });
+    console.log(`[sarool] Dates trouvées dans HTML: ${htmlDates.join(' | ')}`);
+
     const allSlots: Slot[] = [];
     let nextBtnFound = true;
+    let navButtonsForDebug: string[] = [];
 
     for (let week = 0; week < WEEKS_AHEAD; week++) {
       if (week > 0) {
-        const nextBtn = await findNextWeekButton(page);
+        const { el: nextBtn, allButtons } = await findNextWeekButton(page);
+        if (allButtons.length > 0) navButtonsForDebug = allButtons;
         if (!nextBtn) {
           nextBtnFound = false;
           console.log(`[sarool] Bouton semaine suivante introuvable à la semaine ${week}, arrêt`);
@@ -267,14 +284,15 @@ export async function checkAvailableSlots(): Promise<{ slots: Slot[]; wanted: Sl
     const wanted = slots.filter(s => isWantedSlot(s.date));
     console.log(`[sarool] ${wanted.length} créneau(x) correspondant(s) aux critères (week-end / ≥18h)`);
 
-    const uniqueAjax = [...new Set(ajaxIsoDates)].slice(0, 5);
     return {
       slots,
       wanted,
       debugInfo: {
         detectedMonday: displayedMonday.toLocaleDateString('fr-FR'),
-        ajaxDates: uniqueAjax,
+        ajaxDates: [...new Set(ajaxIsoDates)].slice(0, 5),
         nextBtnFound,
+        navButtons: navButtonsForDebug,
+        htmlDates,
       },
     };
   } finally {
