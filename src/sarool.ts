@@ -134,13 +134,35 @@ async function detectDisplayedMonday(page: Page): Promise<Date> {
     }
   }
 
-  // Fallback: current week's Monday
+  // Try reading DayPilot's JavaScript state directly
+  const dpState = await page.evaluate((): string[] => {
+    const dp = (window as any).DayPilot;
+    if (!dp) return [];
+    const results: string[] = [];
+    // Check Calendar instances
+    const cals = dp.Calendar?.instances ?? [];
+    for (const cal of cals.slice(0, 3)) {
+      const start = cal.startDate ?? cal.visibleStart?.();
+      if (start) results.push(`cal.startDate=${JSON.stringify(start).slice(0, 50)}`);
+      const events = cal.events?.list ?? [];
+      for (const ev of events.slice(0, 3)) {
+        results.push(`ev.start=${JSON.stringify(ev.start ?? ev.data?.start).slice(0, 30)}`);
+      }
+    }
+    return results;
+  });
+  if (dpState.length > 0) {
+    console.log(`[sarool] DayPilot JS state: ${dpState.join(' | ')}`);
+  }
+
+  // Fallback: next Monday if today is Sunday, otherwise this week's Monday
   const today = new Date();
   const dow = today.getDay();
   const monday = new Date(today);
-  monday.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1));
+  // dow=0 (Sun): go to next Monday (+1); dow=1 (Mon): stay; others: go back to Monday
+  monday.setDate(today.getDate() - (dow === 0 ? -1 : dow - 1));
   monday.setHours(0, 0, 0, 0);
-  console.log(`[sarool] Semaine non détectée — fallback semaine courante: lundi = ${monday.toLocaleDateString('fr-FR')}`);
+  console.log(`[sarool] Fallback semaine: lundi = ${monday.toLocaleDateString('fr-FR')}`);
   return monday;
 }
 
@@ -168,15 +190,26 @@ async function findNextWeekButton(page: Page): Promise<{ el: import('playwright'
       return { el, allButtons: [] };
     }
   }
-  // Log ALL inputs and buttons — returned in debugInfo for the status endpoint
-  const allButtons = await page.evaluate(() =>
-    Array.from(document.querySelectorAll('input[type="button"], input[type="submit"], input[type="image"], button, a[onclick], [class*="nav"]'))
-      .map(el => {
-        const inp = el as HTMLInputElement;
-        return `${el.tagName}.${el.className.replace(/\s+/g, '.')}|v="${inp.value ?? ''}"|onclick="${el.getAttribute('onclick')?.slice(0, 60) ?? ''}"`;
+  // Look inside the DayPilot calendar for clickable elements
+  const allButtons = await page.evaluate(() => {
+    const results: string[] = [];
+    // All elements inside DayPilot with onclick or cursor:pointer
+    const calEl = document.querySelector('.F3_plncal_main, .F3_plncal_corner, [class*="F3_plncal"]')?.parentElement;
+    const scope = calEl ?? document;
+    Array.from(scope.querySelectorAll('*'))
+      .filter(el => {
+        const style = (el as HTMLElement).style?.cursor;
+        const onclick = el.getAttribute('onclick');
+        const cls = el.className ?? '';
+        return onclick || style === 'pointer' || (typeof cls === 'string' && cls.includes('nav'));
       })
-      .slice(0, 25)
-  );
+      .slice(0, 30)
+      .forEach(el => {
+        const inp = el as HTMLInputElement;
+        results.push(`${el.tagName}.${(el.className + '').slice(0, 40)}|onclick="${el.getAttribute('onclick')?.slice(0, 50) ?? ''}"|cursor="${(el as HTMLElement).style?.cursor ?? ''}"`);
+      });
+    return results;
+  });
   return { el: null, allButtons };
 }
 
