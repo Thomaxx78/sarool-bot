@@ -114,29 +114,29 @@ export async function checkAvailableSlots(): Promise<Slot[]> {
 async function extractSlots(page: Page): Promise<Slot[]> {
   const slots: Slot[] = [];
 
-  // Log all unique F3_plncal_ classes on the page to understand the structure
-  const allClasses = await page.evaluate((): string[] => {
-    const classes = new Set<string>();
-    document.querySelectorAll('[class]').forEach((el: Element) => {
-      el.className.split(' ').forEach((c: string) => {
-        if (c.startsWith('F3_') || c.includes('slot') || c.includes('event') || c.includes('rdv') || c.includes('heure') || c.includes('cell')) {
-          classes.add(c);
-        }
-      });
-    });
-    return Array.from(classes);
-  });
-  console.log('[sarool] Classes trouvées:', allClasses.join(', '));
-
-  // Log a sample of F3_plncal elements that could be slots (not headers)
-  const sampleElements = await page.evaluate((): string[] => {
+  // Log event elements HTML
+  const eventDebug = await page.evaluate((): string[] => {
     const results: string[] = [];
-    document.querySelectorAll('[class*="F3_plncal"]:not([class*="header"])').forEach((el: Element) => {
-      if (results.length < 5) results.push(el.outerHTML.substring(0, 300));
+    document.querySelectorAll('.F3_plncal_event, .F3_plncal_eventDisposE').forEach((el: Element) => {
+      if (results.length < 5) results.push(el.outerHTML.substring(0, 600));
     });
     return results;
   });
-  sampleElements.forEach((html, i) => console.log(`[sarool] F3_plncal[${i}]: ${html}`));
+  console.log(`[sarool] Events trouvés: ${eventDebug.length}`);
+  eventDebug.forEach((html, i) => console.log(`[sarool] Event[${i}]: ${html}`));
+
+  // Look for DayPilot data in page scripts
+  const daypilotData = await page.evaluate((): string | null => {
+    const scripts = Array.from(document.querySelectorAll('script:not([src])'));
+    for (const s of scripts) {
+      const t = (s as HTMLScriptElement).textContent ?? '';
+      if (t.includes('DayPilot') || t.includes('events') || t.includes('start')) {
+        return t.substring(0, 2000);
+      }
+    }
+    return null;
+  });
+  if (daypilotData) console.log('[sarool] DayPilot script:', daypilotData);
 
   // Strategy 1: look for time slots as list items / cards / table rows
   // Common patterns in French driving school apps
