@@ -205,12 +205,19 @@ async function extractSlots(page: Page): Promise<Slot[]> {
 
   if (pageState.eventCount === 0) return [];
 
-  // Step 2: build time scale from row headers (e.g. "8h", "9h", "10h")
+  // Step 2: build time scale from row headers
+  // Sarool shows military time without separator: "600"=6h00, "1300"=13h00
   const slots: Slot[] = [];
   const rowTimes: number[] = pageState.rowHeaders
     .map(h => {
       const m = h.match(/(\d+)h?:?(\d*)/);
-      return m ? parseInt(m[1]!) * 60 + parseInt(m[2] || '0') : -1;
+      if (!m) return -1;
+      const num = parseInt(m[1]!);
+      // HHMM format (e.g. 600=06:00, 1300=13:00) — no 'h' separator and value >= 100
+      if (num >= 100 && !h.includes('h') && !h.includes(':') && (m[2] ?? '') === '') {
+        return Math.floor(num / 100) * 60 + (num % 100);
+      }
+      return num * 60 + parseInt(m[2] || '0');
     })
     .filter(t => t >= 0);
 
