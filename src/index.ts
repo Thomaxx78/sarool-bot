@@ -1,10 +1,30 @@
 import cron from 'node-cron';
 import express from 'express';
+import fs from 'fs';
 import { config } from './config.js';
 import { checkAvailableSlots, bookSlot, closeBrowser, type Slot } from './sarool.js';
 import { sendNotification, sendBookingConfirmation, sendError } from './notifier.js';
 
-const notifiedSlotIds = new Set<string>();
+const SEEN_FILE = '/tmp/sarool_seen.json';
+
+function loadSeen(): Set<string> {
+  try {
+    const data = fs.readFileSync(SEEN_FILE, 'utf-8');
+    return new Set(JSON.parse(data));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveSeen(set: Set<string>): void {
+  try {
+    fs.writeFileSync(SEEN_FILE, JSON.stringify([...set]));
+  } catch {
+    // non-critical
+  }
+}
+
+const notifiedSlotIds = loadSeen();
 let isRunning = false;
 let lastCheck: Date | null = null;
 let lastStatus = 'En attente du premier check...';
@@ -37,6 +57,7 @@ async function check(): Promise<void> {
 
     // Mark slots as seen immediately to avoid re-notifying every 5 min
     newSlots.forEach(s => notifiedSlotIds.add(s.id));
+    saveSeen(notifiedSlotIds);
 
     if (config.autoBook) {
       const target = newSlots[0]!;
