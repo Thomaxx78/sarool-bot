@@ -133,6 +133,11 @@ async function extractSlots(page: Page): Promise<Slot[]> {
     const elements = await page.$$(selector);
     if (elements.length > 0) {
       console.log(`[sarool] Stratégie "${selector}": ${elements.length} éléments trouvés`);
+      // Log the first 3 elements for debugging
+      for (let i = 0; i < Math.min(3, elements.length); i++) {
+        const html = await elements[i]!.evaluate((el: Element) => el.outerHTML);
+        console.log(`[sarool] Element[${i}]: ${html.substring(0, 500)}`);
+      }
       for (const el of elements) {
         const slot = await parseSlotElement(el, selector);
         if (slot) slots.push(slot);
