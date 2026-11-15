@@ -107,10 +107,11 @@ export async function checkAvailableSlots(): Promise<Slot[]> {
     await page.waitForTimeout(1000);
 
     const slots = await extractSlots(page);
-    console.log(`[sarool] ${slots.length} créneau(x) disponible(s) trouvé(s)`);
+    console.log(`[sarool] ${slots.length} créneau(x) total trouvé(s)`);
+    slots.forEach(s => console.log(`[sarool]   → ${s.date.toLocaleString('fr-FR')} (${s.duration ?? '?'})`));
 
     const wanted = slots.filter(s => isWantedSlot(s.date));
-    console.log(`[sarool] ${wanted.length} créneau(x) correspondant(s) aux critères`);
+    console.log(`[sarool] ${wanted.length} créneau(x) correspondant(s) aux critères (week-end / ≥18h)`);
 
     return wanted;
   } finally {
