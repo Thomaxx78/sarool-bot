@@ -120,7 +120,7 @@ async function extractSlots(page: Page): Promise<Slot[]> {
     eventCount: number;
     colHeaders: string[];
     rowHeaders: string[];
-    events: Array<{ top: number; height: number; left: string; colHeader: string }>;
+    events: Array<{ top: number; height: number; left: string; colIndex: number }>;
   } => {
     const eventEls = Array.from(document.querySelectorAll('.F3_plncal_eventDisposE'));
     const colHeaders = Array.from(document.querySelectorAll('.F3_plncal_colheader_base'))
@@ -128,26 +128,39 @@ async function extractSlots(page: Page): Promise<Slot[]> {
     const rowHeaders = Array.from(document.querySelectorAll('.F3_plncal_rowheader_inner'))
       .map(el => el.textContent?.trim() ?? '');
 
+    // Find all column containers (direct children of the scroll content area)
+    // DayPilot renders one absolute-positioned div per day column
+    const scrollContent = document.querySelector('.F3_plncal_scroll > div > div');
+    const colContainers = scrollContent
+      ? Array.from(scrollContent.children).filter(c =>
+          (c as HTMLElement).style.position === 'absolute' && c.querySelector('.F3_plncal_event')
+        )
+      : [];
+
     const events = eventEls.map(el => {
       const style = (el as HTMLElement).style;
-      // Find the column this event belongs to by checking parent chain
-      let colHeader = '';
-      let ancestor: Element | null = el.parentElement;
-      while (ancestor) {
-        const idx = ancestor.parentElement
-          ? Array.from(ancestor.parentElement.children).indexOf(ancestor)
-          : -1;
-        if (idx > 0 && colHeaders[idx - 1]) {
-          colHeader = colHeaders[idx - 1]!;
-          break;
+      // Find column index: which column container is this event inside?
+      let colIndex = -1;
+      for (let i = 0; i < colContainers.length; i++) {
+        if (colContainers[i]!.contains(el)) { colIndex = i; break; }
+      }
+      // Fallback: use left% of nearest positioned ancestor
+      if (colIndex === -1) {
+        let ancestor: Element | null = el.parentElement;
+        while (ancestor && ancestor !== scrollContent) {
+          const left = parseFloat((ancestor as HTMLElement).style.left ?? '');
+          if (!isNaN(left) && left > 0) {
+            colIndex = Math.round(left / (100 / Math.max(colHeaders.length, 1)));
+            break;
+          }
+          ancestor = ancestor.parentElement;
         }
-        ancestor = ancestor.parentElement;
       }
       return {
         top: parseInt(style.top ?? '0'),
         height: parseInt(style.height ?? '32'),
         left: style.left ?? '0%',
-        colHeader,
+        colIndex: Math.max(0, colIndex),
       };
     });
 
@@ -158,7 +171,7 @@ async function extractSlots(page: Page): Promise<Slot[]> {
   console.log(`[sarool] colHeaders: ${pageState.colHeaders.join(' | ')}`);
   console.log(`[sarool] rowHeaders (first 4): ${pageState.rowHeaders.slice(0, 4).join(' | ')}`);
   pageState.events.forEach((e, i) =>
-    console.log(`[sarool] event[${i}]: top=${e.top}px height=${e.height}px col="${e.colHeader}"`)
+    console.log(`[sarool] event[${i}]: top=${e.top}px height=${e.height}px colIndex=${e.colIndex}`)
   );
 
   if (pageState.eventCount === 0) return [];
@@ -225,17 +238,7 @@ async function extractSlots(page: Page): Promise<Slot[]> {
 
   // Step 3: map each event to a date
   for (const ev of pageState.events) {
-    // Determine column index from header text
-    const headerWord = ev.colHeader.split(/\s+/)[0]?.toUpperCase() ?? '';
-    let colIdx = DAY_INDEX[headerWord] ?? -1;
-    if (colIdx === -1) {
-      // Try position-based: find index of this header in colHeaders
-      colIdx = pageState.colHeaders.findIndex(h => h === ev.colHeader);
-    }
-    if (colIdx === -1) {
-      console.log(`[sarool] Colonne inconnue "${ev.colHeader}", skip`);
-      continue;
-    }
+    const colIdx = ev.colIndex;
 
     const slotDay = new Date(monday);
     slotDay.setDate(monday.getDate() + colIdx);

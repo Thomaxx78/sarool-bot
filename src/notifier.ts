@@ -1,11 +1,16 @@
 import { config } from './config.js';
 import type { Slot } from './sarool.js';
 
+function stripEmoji(str: string): string {
+  // HTTP headers only support ASCII — remove emoji
+  return str.replace(/[^\x00-\x7F]/g, '').trim();
+}
+
 async function ntfyPost(title: string, message: string, priority: 'default' | 'high' | 'urgent' = 'high'): Promise<void> {
   const response = await fetch(`https://ntfy.sh/${config.ntfy.topic}`, {
     method: 'POST',
     headers: {
-      'Title': title,
+      'Title': stripEmoji(title),
       'Priority': priority,
       'Tags': 'car',
       'Content-Type': 'text/plain; charset=utf-8',
