@@ -60,7 +60,7 @@ export async function sendNotification(slots: Slot[]): Promise<void> {
     return `${dateStr}${s.duration ? ` (${s.duration})` : ''}`;
   });
 
-  const tgMsg = `🚗 <b>${slots.length} créneau(x) dispo sur Sarool !</b>\n\n${lines.join('\n')}\n\nsarool.fr/agenda`;
+  const tgMsg = `🚗 <b>${slots.length} créneau(x) dispo sur Sarool !</b>\n\n${lines.join('\n')}\n\n<a href="https://www.sarool.fr/agenda">👉 Réserver maintenant</a>`;
   const ntfyBody = lines.join('\n') + '\n\nsarool.fr/agenda';
 
   const sent = await telegramSend(tgMsg);
