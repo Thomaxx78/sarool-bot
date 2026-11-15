@@ -183,7 +183,7 @@ async function navigateToNextWeek(page: Page): Promise<{ success: boolean; allBu
     }
   }
 
-  // Method 2: DayPilot JavaScript API
+  // Method 2: DayPilot JS API (safe — no __doPostBack in strict mode)
   const jsNavigated = await page.evaluate((): boolean => {
     const dp = (window as any).DayPilot;
     if (!dp) return false;
@@ -193,17 +193,22 @@ async function navigateToNextWeek(page: Page): Promise<{ success: boolean; allBu
       if (typeof cal.goNext === 'function') { cal.goNext(); return true; }
       if (typeof cal.commandCallBack === 'function') { cal.commandCallBack('navigate', { offset: 1 }); return true; }
     }
-    // Try __doPostBack with DayPilot-style args
-    const doPostBack = (window as any).__doPostBack;
-    if (typeof doPostBack === 'function') {
-      // Find DayPilot control ID
-      const calEl = document.querySelector('[id*="plncal"], [id*="DayPilot"]');
-      if (calEl) { doPostBack(calEl.id, 'Navigate:Next'); return true; }
-    }
     return false;
   });
   if (jsNavigated) {
     console.log('[sarool] Nav: DayPilot JS navigation appelée');
+    return { success: true, allButtons: [] };
+  }
+
+  // Method 2b: __doPostBack via injected non-strict script tag
+  const calId = await page.$eval('[id*="plncal"], [id*="DayPilot"]', el => el.id).catch(() => null);
+  if (calId) {
+    await page.evaluate((id: string): void => {
+      const s = document.createElement('script');
+      s.textContent = `try { __doPostBack(${JSON.stringify(id)}, 'Navigate:Next'); } catch(e) {}`;
+      document.head.appendChild(s);
+    }, calId);
+    console.log(`[sarool] Nav: __doPostBack injecté pour id="${calId}"`);
     return { success: true, allButtons: [] };
   }
 
